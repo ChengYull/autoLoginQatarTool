@@ -11,6 +11,11 @@ class ProcessDetector : public QObject
     Q_OBJECT
 public:
     explicit ProcessDetector(QObject *parent = nullptr);
+    void startDetection();
+    void stopDetection();
+
+signals:
+    void loginSignal();
 
 private slots:
     void checkProcess();
