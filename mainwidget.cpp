@@ -3,6 +3,28 @@
 MainWidget::MainWidget(QWidget *parent)
     : QWidget(parent)
 {
+    // 获取exe目录
+    exePath = QCoreApplication::applicationDirPath().append("\\");
+    // 最小化
+    // 创建系统托盘图标
+    trayIcon = new QSystemTrayIcon(this);
+    trayIcon->setIcon(QIcon(exePath + "data\\img\\appico.ico")); // 设置托盘图标
+    // 创建右键菜单
+    trayMenu = new QMenu(this);
+    exitAction = new QAction("退出", this);
+    trayMenu->addAction(exitAction);
+    // 将菜单设置到托盘图标
+    trayIcon->setContextMenu(trayMenu);
+    tip = "AutoLoginQatarTool " + version + "\n程序状态: ";
+    statueTip = enableStatue ? "运行中" : "已停止";
+    trayIcon->setToolTip(tip + statueTip);
+    // 连接退出动作的槽函数
+    connect(exitAction, &QAction::triggered, this, &MainWidget::onExit);
+    // 连接托盘图标的点击事件
+    connect(trayIcon, &QSystemTrayIcon::activated, this, &MainWidget::onTrayIconActivated);
+    // 显示托盘图标
+    trayIcon->show();
+
     this->resize(260, 120);
     loadSettings(password, autoStartStatue);
     // 主布局
@@ -62,7 +84,34 @@ MainWidget::MainWidget(QWidget *parent)
 }
 
 MainWidget::~MainWidget() {}
+/* 重写关闭按钮 */
+void MainWidget::closeEvent(QCloseEvent *event) {
+    // 隐藏主窗口
+    this->hide();
 
+    // 显示系统托盘图标
+    trayIcon->show();
+
+    // 阻止默认关闭行为
+    event->ignore();
+}
+/* 右键菜单退出槽函数 */
+void MainWidget::onExit() {
+    // 确认退出
+    if (QMessageBox::question(this, "退出", "确定要退出程序吗？", QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
+        trayIcon->hide(); // 隐藏托盘图标
+        if(enableStatue) disableAutoLogin();
+        QApplication::quit(); // 退出程序
+    }
+}
+/* 托盘图标点击事件 */
+void MainWidget::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason){
+    // 判断交互类型
+    if (reason == QSystemTrayIcon::DoubleClick || reason == QSystemTrayIcon::Trigger) {
+        this->show(); // 显示主窗口
+        this->activateWindow(); // 激活窗口
+    }
+}
 /* 设置开机自启 */
 void MainWidget::setAutoStart(bool enabled) {
     QSettings settings("HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Run", QSettings::NativeFormat);
@@ -96,6 +145,8 @@ void MainWidget::enableAutoLogin(){
         isSimpleEnvironment = radio1->isChecked();
         detector->startDetection();
         enableStatue = true;
+        statueTip = enableStatue ? "运行中" : "已停止";
+        trayIcon->setToolTip(tip + statueTip);
     }else{
         QMessageBox::critical(this, "自动登录已启用！", "自动登录已启用...");
     }
@@ -107,6 +158,8 @@ void MainWidget::disableAutoLogin(){
         statueLabel2->setStyleSheet("color: red;");
         detector->stopDetection();
         enableStatue = false;
+        statueTip = enableStatue ? "运行中" : "已停止";
+        trayIcon->setToolTip(tip + statueTip);
     }else{
         QMessageBox::critical(this, "自动登录未启用！", "自动登录未启用...");
     }
@@ -135,8 +188,6 @@ HWND MainWidget::findPasswordHwnd(){
                 return hwndPassword;
             }
         }
-    }else{
-        qDebug() << "cant find window named" << "密码对话框";
     }
     return 0x0;
 }
@@ -163,8 +214,6 @@ HWND MainWidget::findLoginHwnd(){
             }
             if (hwndLogin) return hwndLogin;
         }
-    }else{
-        qDebug() << "cant find window named" << "密码对话框";
     }
     return 0x0;
 }
@@ -186,9 +235,6 @@ void MainWidget::login(){
                 // 发送 BM_CLICK 消息，模拟点击按钮
                 SendMessage(hwndLogin, BM_CLICK, 0, 0);
             }
-        }else{
-            qDebug() << "cant find Edit";
         }
-
     });
 }
