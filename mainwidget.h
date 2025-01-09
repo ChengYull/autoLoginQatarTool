@@ -30,7 +30,7 @@ public:
     ~MainWidget();
 
 private:
-    QString version = "v1.0.0";
+    QString version = "v1.0.1";
     QString tip = "";
     QString statueTip = "";
     QString exePath = "";
@@ -65,6 +65,7 @@ private:
     void loadSettings(QString &password, bool &autoStart);
     HWND findPasswordHwnd();
     HWND findLoginHwnd();
+    HWND findErrorMsg();
 private slots:
     void enableAutoLogin();
     void disableAutoLogin();

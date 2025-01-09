@@ -217,14 +217,37 @@ HWND MainWidget::findLoginHwnd(){
     }
     return 0x0;
 }
+/* 寻找登录错误信息 */
+HWND MainWidget::findErrorMsg(){
+    // 查找主窗口
+    HWND hwnd;
+    if(isSimpleEnvironment){
+        hwnd = FindWindow(NULL, L"密码对话框");
+    }else{
+        hwnd = FindWindow(NULL, L"密碼對話框");
+    }
+    if (hwnd) {
+        // 查找 panel 控件
+        HWND hwndPanel = FindWindowEx(hwnd, NULL, L"wxWindowNR", NULL);
+        if (hwndPanel) {
+            // 查找登录按钮
+            HWND hwndError = FindWindowEx(hwndPanel, NULL, L"Static", L"Right: 0, Area: 0x99, ec: -3(远端响应帐密错误)");
+            if (hwndError) return hwndError;
+        }
+    }
+    return 0x0;
+}
 /* 登录 */
 void MainWidget::login(){
     qDebug() << "auto Login!";
-    //disableAutoLogin();
-// 使用 QTimer 延时 2 秒
+    disableAutoLogin();
+    // 使用 QTimer 延时 2 秒
     QTimer::singleShot(2000, this, [this]() {
         HWND hwndPassword = findPasswordHwnd();
         if (hwndPassword) {
+
+            // 先清空原密码内容
+            SendMessage(hwndPassword, WM_SETTEXT, 0, (LPARAM)L"");
             // 输入密码
             for (QChar ch : password) {
                 SendMessage(hwndPassword, WM_CHAR, ch.unicode(), 0);
@@ -235,6 +258,11 @@ void MainWidget::login(){
                 // 发送 BM_CLICK 消息，模拟点击按钮
                 SendMessage(hwndLogin, BM_CLICK, 0, 0);
             }
+            if(findErrorMsg()){
+                QMessageBox::critical(this, "密码错误", "密码与工号不匹配, 请重新配置密码...");
+                return;
+            }
         }
+        enableAutoLogin();
     });
 }
