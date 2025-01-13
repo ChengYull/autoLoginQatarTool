@@ -16,7 +16,7 @@ MainWidget::MainWidget(QWidget *parent)
     // 将菜单设置到托盘图标
     trayIcon->setContextMenu(trayMenu);
     tip = "AutoLoginQatarTool " + version + "\n程序状态: ";
-    statueTip = enableStatue ? "运行中" : "已停止";
+    statueTip = enableStatus ? "运行中" : "已停止";
     trayIcon->setToolTip(tip + statueTip);
     // 连接退出动作的槽函数
     connect(exitAction, &QAction::triggered, this, &MainWidget::onExit);
@@ -26,7 +26,7 @@ MainWidget::MainWidget(QWidget *parent)
     trayIcon->show();
 
     this->resize(260, 120);
-    loadSettings(password, autoStartStatue);
+    loadSettings();
     // 主布局
     mainLayout = new QVBoxLayout(this);
     // 程序运行状态
@@ -47,14 +47,14 @@ MainWidget::MainWidget(QWidget *parent)
     mainLayout->addLayout(passwordLayout);
     // 开机自启
     autoStartEnable = new QCheckBox("是否开机自启", this);
-    autoStartEnable->setChecked(autoStartStatue);
+    autoStartEnable->setChecked(autoStartStatus);
     mainLayout->addWidget(autoStartEnable);
 
     // 创建单选框
     radio1 = new QRadioButton("简体环境", this);
     radio1->setChecked(isSimpleEnvironment);
     radio2 = new QRadioButton("繁體環境", this);
-    radio1->setChecked(!isSimpleEnvironment);
+    radio2->setChecked(!isSimpleEnvironment);
     QHBoxLayout *radioLayout = new QHBoxLayout(this);
     // 将单选框添加到布局中
     radioLayout->addWidget(radio1);
@@ -76,11 +76,27 @@ MainWidget::MainWidget(QWidget *parent)
     // 检测器初始化
     detector = new ProcessDetector(this);
 
+    // 启用自动登录
     connect(startAutoLogin, &QPushButton::clicked, this, &MainWidget::enableAutoLogin);
 
+    // 停用自动登录
     connect(stopAutoLogin, &QPushButton::clicked, this, &MainWidget::disableAutoLogin);
 
+    // 绑定定时检测信号与登录函数
     connect(detector, &ProcessDetector::loginSignal, this, &MainWidget::login);
+
+    // 密码输入框改变时，为密码赋值
+    connect(passwordInput, &QLineEdit::textChanged, this, [=]{
+        password = passwordInput->text();
+    });
+    // 开机自启选择框改变时，为开机自启状态赋值
+    connect(autoStartEnable, &QCheckBox::stateChanged, this, [=]{
+        autoStartStatus = autoStartEnable->isChecked();
+    });
+    // 简体繁体选择框改变时，为其重新赋值
+    connect(radio1, &QRadioButton::toggled, this,[=]{
+        isSimpleEnvironment = radio1->isChecked();
+    });
 }
 
 MainWidget::~MainWidget() {}
@@ -97,10 +113,13 @@ void MainWidget::closeEvent(QCloseEvent *event) {
 }
 /* 右键菜单退出槽函数 */
 void MainWidget::onExit() {
+    this->show();
     // 确认退出
     if (QMessageBox::question(this, "退出", "确定要退出程序吗？", QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
+        saveSettings(); // 保存配置
+        setAutoStart(autoStartStatus);  // 设置是否开机自启
         trayIcon->hide(); // 隐藏托盘图标
-        if(enableStatue) disableAutoLogin();
+        if(enableStatus) disableAutoLogin();
         QApplication::quit(); // 退出程序
     }
 }
@@ -122,30 +141,33 @@ void MainWidget::setAutoStart(bool enabled) {
     }
 }
 /* 保存配置 */
-void MainWidget::saveSettings(const QString &password, bool autoStart) {
+void MainWidget::saveSettings() {
     QSettings settings("Qtech", "autoLoginQatarApp");
     settings.setValue("password", password);
-    settings.setValue("autoStart", autoStart);
+    settings.setValue("autoStart", autoStartStatus);
+    settings.setValue("isSimple", isSimpleEnvironment);
 }
 /* 加载配置 */
-void MainWidget::loadSettings(QString &password, bool &autoStart) {
+void MainWidget::loadSettings() {
     QSettings settings("Qtech", "autoLoginQatarApp");
     password = settings.value("password").toString();
-    autoStart = settings.value("autoStart").toBool();
+    autoStartStatus = settings.value("autoStart").toBool();
+    isSimpleEnvironment = settings.value("isSimple").toBool();
 }
 /* 开启自动登录 */
 void MainWidget::enableAutoLogin(){
-    if(!enableStatue){
+    if(!enableStatus){
+        // 卡控密码为空情况
+        if(password.isEmpty()){
+            QMessageBox::critical(this, "密码为空！", "请先配置密码...");
+            return;
+        }
         statueLabel2->setText("运行中");
         statueLabel2->setStyleSheet("color: green;");
-        password = passwordInput->text();
-        autoStartStatue = autoStartEnable->isChecked();
-        saveSettings(password, autoStartStatue); // 保存设置
-        setAutoStart(autoStartStatue);  // 设置是否开机自启
-        isSimpleEnvironment = radio1->isChecked();
+
         detector->startDetection();
-        enableStatue = true;
-        statueTip = enableStatue ? "运行中" : "已停止";
+        enableStatus = true;
+        statueTip = enableStatus ? "运行中" : "已停止";
         trayIcon->setToolTip(tip + statueTip);
     }else{
         QMessageBox::critical(this, "自动登录已启用！", "自动登录已启用...");
@@ -153,12 +175,12 @@ void MainWidget::enableAutoLogin(){
 }
 /* 停止自动登录 */
 void MainWidget::disableAutoLogin(){
-    if(enableStatue){
+    if(enableStatus){
         statueLabel2->setText("已停止");
         statueLabel2->setStyleSheet("color: red;");
         detector->stopDetection();
-        enableStatue = false;
-        statueTip = enableStatue ? "运行中" : "已停止";
+        enableStatus = false;
+        statueTip = enableStatus ? "运行中" : "已停止";
         trayIcon->setToolTip(tip + statueTip);
     }else{
         QMessageBox::critical(this, "自动登录未启用！", "自动登录未启用...");
@@ -259,6 +281,9 @@ void MainWidget::login(){
                 SendMessage(hwndLogin, BM_CLICK, 0, 0);
             }
             if(findErrorMsg()){
+                // 窗口置顶
+                this->setWindowFlag(Qt::WindowStaysOnTopHint);
+                this->show();
                 QMessageBox::critical(this, "密码错误", "密码与工号不匹配, 请重新配置密码...");
                 return;
             }

@@ -51,9 +51,9 @@ private:
     QRadioButton *radio2;
 
     ProcessDetector* detector;             // 进程检测器
-    bool enableStatue = false;
+    bool enableStatus = false;
     QString password = "";
-    bool autoStartStatue = false;
+    bool autoStartStatus = false;
     bool isSimpleEnvironment = true;
 
     QSystemTrayIcon *trayIcon; // 系统托盘图标
@@ -61,8 +61,8 @@ private:
     QAction *exitAction;       // 退出动作
 
     void setAutoStart(bool enabled);
-    void saveSettings(const QString &password, bool autoStart);
-    void loadSettings(QString &password, bool &autoStart);
+    void saveSettings();
+    void loadSettings();
     HWND findPasswordHwnd();
     HWND findLoginHwnd();
     HWND findErrorMsg();
