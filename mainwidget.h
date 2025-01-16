@@ -30,7 +30,8 @@ public:
     ~MainWidget();
 
 private:
-    QString version = "v1.0.1";
+    QString appName = "AutoLogin ";
+    QString version = "v1.0.3";
     QString tip = "";
     QString statueTip = "";
     QString exePath = "";

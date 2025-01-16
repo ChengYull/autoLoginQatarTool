@@ -3,6 +3,7 @@
 MainWidget::MainWidget(QWidget *parent)
     : QWidget(parent)
 {
+    this->setWindowTitle(appName + version);
     // 获取exe目录
     exePath = QCoreApplication::applicationDirPath().append("\\");
     // 最小化
@@ -102,6 +103,8 @@ MainWidget::MainWidget(QWidget *parent)
 MainWidget::~MainWidget() {}
 /* 重写关闭按钮 */
 void MainWidget::closeEvent(QCloseEvent *event) {
+    saveSettings(); // 保存配置
+    setAutoStart(autoStartStatus);  // 设置是否开机自启
     // 隐藏主窗口
     this->hide();
 
@@ -116,8 +119,6 @@ void MainWidget::onExit() {
     this->show();
     // 确认退出
     if (QMessageBox::question(this, "退出", "确定要退出程序吗？", QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
-        saveSettings(); // 保存配置
-        setAutoStart(autoStartStatus);  // 设置是否开机自启
         trayIcon->hide(); // 隐藏托盘图标
         if(enableStatus) disableAutoLogin();
         QApplication::quit(); // 退出程序
