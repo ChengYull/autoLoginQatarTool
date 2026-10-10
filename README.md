@@ -2,7 +2,7 @@
 
 Qatar 客户端自动登录工具。常驻系统托盘，自动监测 `QaTar.exe` 启动,并在其弹出“密码对话框”时自动填入账户与密码、点击登录。
 
-当前版本:`v1.0.3`(Qt Widgets / Windows 桌面)
+当前版本:`v1.0.3`(Qt Widgets / Windows 桌面,界面为无边框圆角卡片风格,窗口与托盘标题均不显示版本号)
 
 ---
 
@@ -15,16 +15,18 @@ Qatar 客户端自动登录工具。常驻系统托盘，自动监测 `QaTar.exe
 | 自动填密码 | 先清空输入框再逐字符输入密码,规避残留内容 |
 | 密码错误识别 | 登录后检测错误提示,命中时提示“密码与工号不匹配”,不再重复尝试 |
 | 多语言环境自适应 | 同时兼容**简体中文 / 繁体中文 / 英文**三种客户端界面,无需手动切换 |
-| 开机自启 | 可勾选写入 `HKCU\...\CurrentVersion\Run` |
+| 开机自启 | 卡片式开关,写入 `HKCU\...\CurrentVersion\Run` |
 | 系统托盘 | 关闭窗口仅最小化到托盘,双击托盘图标恢复,右键菜单退出 |
 | 配置持久化 | 账户、密码、自启开关自动保存,重启后回填 |
+| 现代界面 | 无边框圆角卡片 + 自定义标题栏,密码支持显示/隐藏切换 |
+| 矢量图标 | 参考 Qatar 客户端的相机造型设计,窗口 / 任务栏 / 托盘 / exe 内嵌图标共用同一套 SVG |
 
 ---
 
 ## 环境要求
 
 - Windows 10 / 11 (x64)
-- Qt 6.5.x (MinGW 64-bit)
+- Qt 6.5.x (MinGW 64-bit),需要 **Qt Svg** 模块(工程已通过 `QT += svg` 声明)
 - MinGW 11.2.0 或以上
 
 > 代码使用 `windows.h` 的 Win32 窗口 API 与 `QSystemTrayIcon`,仅支持 Windows 平台。
@@ -68,33 +70,46 @@ windeployqt --release --no-translations autoLoginTool.exe
 > `Unable to find the platform plugin.` 此时可手动拷贝以下文件(与 windeployqt 结果一致但更精简):
 >
 > ```
-> Qt6Core.dll  Qt6Gui.dll  Qt6Widgets.dll
+> Qt6Core.dll  Qt6Gui.dll  Qt6Widgets.dll  Qt6Svg.dll   # Qt6Svg 必需，图标渲染依赖它
 > libgcc_s_seh-1.dll  libstdc++-6.dll  libwinpthread-1.dll
 > platforms\qwindows.dll          # 必需，缺失会直接启动失败
 > styles\qwindowsvistastyle.dll   # 原生控件外观
 > imageformats\qico.dll  qjpeg.dll  qgif.dll
 > ```
 
-### 图标资源(必需)
+### 图标资源(已内嵌)
 
-程序从 **exe 同级目录** 读取托盘图标:
+图标统一为一份 SVG:`assets/icons/app.svg`(相机造型,参考 Qatar 客户端图标)。它有两个入口:
 
+| 用途 | 载体 | 说明 |
+| --- | --- | --- |
+| 窗口 / 任务栏 / 托盘 | `resources.qrc` 内嵌的 `:/icons/app.svg` | 运行时由 `QSvgRenderer` 渲染成 16~256 的位图 |
+| exe 文件图标 | `resources.qrc` 之外,由 `RC_ICONS` 内嵌的 `assets/icons/app.ico` | 资源管理器、快捷方式、任务栏固定时显示 |
+
+`app.ico` 是同一份 SVG 预渲染出的多尺寸图标(16/20/24/32/40/48/64/128/256)。
+修改 `app.svg` 后需要重新导出一次 `app.ico`(否则窗口/托盘会立刻更新,但资源管理器里的 exe 图标不变):
+
+```powershell
+cd tools\icogen
+qmake icogen.pro -spec win32-g++ "CONFIG+=release"
+mingw32-make -j8
+release\icogen.exe                 # 直接覆盖 assets\icons\app.ico
 ```
-<exe 所在目录>\data\img\appico.ico
-```
 
-该图标不随源码提供,部署时需自行放置,否则托盘图标为空。
+由此**不再需要** `data\img\appico.ico` 这类外部图标文件;因为是自己渲染位图而非依赖 Qt 的图片插件,
+部署时也无需额外分发 `iconengines\qsvgicon.dll` 与 `imageformats\qsvg.dll`,只保留 `Qt6Svg.dll` 即可。
 
 ---
 
 ## 使用说明
 
-1. 运行 `autoLoginTool.exe`,在“账户”栏填写工号(`Emp ID`),在“密码”栏填写密码。
-2. 按需勾选“是否开机自启”。
-3. 点击 **启动自动登录**,状态变为绿色的“运行中”。
+1. 运行 `autoLoginTool.exe`,在“账户 / 工号”栏填写工号(`Emp ID`),在“密码”栏填写密码。
+2. 按需打开“开机自启动”开关。
+3. 点击 **启动自动登录**,状态徽标变为绿色的“运行中”。
 4. 保持程序在托盘后台运行。当 `QaTar.exe` 启动并弹出密码对话框时,程序会延时 2 秒后自动填入账户与密码并点击登录。
 5. 若提示“密码与工号不匹配”,说明账户或密码有误,修正后状态会自动恢复监测。
-6. 点击窗口关闭按钮只会最小化到托盘;需右键托盘图标 → **退出** 才会真正结束进程。
+6. 点击窗口关闭按钮(或标题栏右上角 ✕)只会最小化到托盘;需右键托盘图标 → **退出** 才会真正结束进程。
+7. 密码默认以圆点掩码显示,需要核对时可点右侧 **显示** 切换为明文。
 
 ### 配置存储位置
 
@@ -193,8 +208,14 @@ Right: 0, Area: 0x99, ec: -3(远端响应帐密错误)
 ```
 autoLoginQatarTool/
 ├── autoLoginTool.pro     # qmake 工程文件
+├── resources.qrc         # SVG 图标资源
+├── assets/icons/
+│   ├── app.svg           # 应用图标源文件（窗口 / 任务栏 / 托盘共用）
+│   └── app.ico           # 由 app.svg 导出的多尺寸图标，经 RC_ICONS 内嵌进 exe
 ├── main.cpp              # 程序入口
-├── mainwidget.h/.cpp     # 主窗口、托盘、设置持久化、窗口自动化登录
+├── mainwidget.h/.cpp     # 主窗口界面、托盘、设置持久化、窗口自动化登录
+├── tools/icogen/         # 由 app.svg 生成多尺寸 app.ico 的小工具
+├── toggleswitch.h/.cpp   # 开机自启用的现代化滑动开关（纯 QPainter 绘制）
 ├── processdetector.h/.cpp# 基于系统进程快照(Toolhelp32)的进程轮询检测
 ├── README.md
 └── .gitignore
@@ -207,8 +228,9 @@ autoLoginQatarTool/
 **Q:双击 exe 无反应 / 报缺少 DLL?**
 未部署 Qt 运行库或 `platforms\qwindows.dll`,参考上文“部署”一节。
 
-**Q:托盘区域没有图标?**
-检查 exe 同级目录下是否存在 `data\img\appico.ico`。
+**Q:托盘区域没有图标 / 窗口图标空白?**
+图标已内嵌在 exe 中,先确认部署目录含 `Qt6Svg.dll`(缺失时 `QSvgRenderer` 无法解析,图标会渲染为空)。
+若任务栏通知区只显示一个「^」折叠面板,是 Windows 11 的默认行为——把图标从折叠区拖到任务栏即可常驻显示。
 
 **Q:提示“密码与工号不匹配”但密码确认无误?**
 确认“账户”栏填写的工号与对话框中 `Emp ID` 的实际选择项一致;部分环境下下拉框为只读,写入未在列表中的工号会无效。

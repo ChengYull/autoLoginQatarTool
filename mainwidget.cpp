@@ -1,5 +1,11 @@
 #include "mainwidget.h"
 
+#include <QGraphicsDropShadowEffect>
+#include <QMouseEvent>
+#include <QPainter>
+#include <QPixmap>
+#include <QSvgRenderer>
+
 #include <string>
 #include <vector>
 
@@ -16,6 +22,29 @@ const DialogEnv kDialogEnvs[] = {
     { L"密碼對話框",      L"Login" }, // 繁体环境
     { L"Password Dialog", L"Login" }, // 英文环境
 };
+
+/* 把内嵌的 SVG 渲染成多尺寸 QIcon。
+ * 直接渲染而不是依赖 Qt 的 SVG 图片插件，可保证任意 DPI 下的清晰度，
+ * 也不必在部署时额外分发 iconengines/imageformats 插件。 */
+QIcon renderSvgIcon(const QString &path)
+{
+    QIcon icon;
+    QSvgRenderer renderer(path);
+    if (!renderer.isValid()) return icon;
+
+    const int sizes[] = {16, 20, 24, 32, 48, 64, 128, 256};
+    for (int size : sizes) {
+        QPixmap pixmap(size, size);
+        pixmap.fill(Qt::transparent);
+        QPainter painter(&pixmap);
+        painter.setRenderHint(QPainter::Antialiasing, true);
+        painter.setRenderHint(QPainter::SmoothPixmapTransform, true);
+        renderer.render(&painter, QRectF(0, 0, size, size));
+        painter.end();
+        icon.addPixmap(pixmap);
+    }
+    return icon;
+}
 
 /* 获取父窗口的直接子控件 */
 QList<HWND> directChildren(HWND parent, const wchar_t *className)
@@ -75,71 +104,43 @@ bool setComboBoxText(HWND hwnd, const QString &text)
 
 } // namespace
 
+QIcon MainWidget::appIcon()
+{
+    return renderSvgIcon(QStringLiteral(":/icons/app.svg"));
+}
+
 MainWidget::MainWidget(QWidget *parent)
     : QWidget(parent)
 {
-    this->setWindowTitle(appName + version);
-    // 获取exe目录
-    exePath = QCoreApplication::applicationDirPath().append("\\");
-    // 最小化
-    // 创建系统托盘图标
+    loadSettings();
+
+    /* 系统托盘 */
     trayIcon = new QSystemTrayIcon(this);
-    trayIcon->setIcon(QIcon(exePath + "data\\img\\appico.ico")); // 设置托盘图标
-    // 创建右键菜单
-    trayMenu = new QMenu(this);
-    exitAction = new QAction("退出", this);
-    trayMenu->addAction(exitAction);
-    // 将菜单设置到托盘图标
-    trayIcon->setContextMenu(trayMenu);
-    tip = "AutoLoginQatarTool " + version + "\n程序状态: ";
+    trayIcon->setIcon(appIcon());
+    tip = appName + "\n程序状态: ";
     trayIcon->setToolTip(tip + "已停止");
-    // 连接退出动作的槽函数
+
+    trayMenu = new QMenu(this);
+    trayMenu->setStyleSheet(
+        "QMenu { background:#ffffff; border:1px solid #e6ebf2; border-radius:8px; padding:6px; }"
+        "QMenu::item { padding:6px 22px; border-radius:6px; color:#334155; font-size:12px; }"
+        "QMenu::item:selected { background:#eff6ff; color:#1d4ed8; }"
+        "QMenu::separator { height:1px; background:#eef2f7; margin:4px 8px; }");
+
+    showAction = new QAction("显示主界面", this);
+    exitAction = new QAction("退出", this);
+    trayMenu->addAction(showAction);
+    trayMenu->addSeparator();
+    trayMenu->addAction(exitAction);
+    trayIcon->setContextMenu(trayMenu);
+
+    connect(showAction, &QAction::triggered, this, &MainWidget::showFromTray);
     connect(exitAction, &QAction::triggered, this, &MainWidget::onExit);
-    // 连接托盘图标的点击事件
     connect(trayIcon, &QSystemTrayIcon::activated, this, &MainWidget::onTrayIconActivated);
-    // 显示托盘图标
     trayIcon->show();
 
-    this->resize(300, 175);
-    loadSettings();
-    // 主布局
-    mainLayout = new QVBoxLayout(this);
-    // 程序运行状态
-    statueLabel1 = new QLabel("程序状态：", this);
-    statueLabel2 = new QLabel("已停止", this);
-    statueLabel2->setStyleSheet("color: red;");
-    statueLayout = new QHBoxLayout(this);
-    statueLayout->addWidget(statueLabel1);
-    statueLayout->addWidget(statueLabel2);
-    statueLayout->addStretch();
-    mainLayout->addLayout(statueLayout);
-    // 账户输入（对应对话框中的 Emp ID / 员工ID）
-    accountLayout = new QHBoxLayout(this);
-    accountLabel = new QLabel("账户:", this);
-    accountInput = new QLineEdit(account, this);
-    accountInput->setPlaceholderText("Emp ID / 员工ID");
-    accountLayout->addWidget(accountLabel);
-    accountLayout->addWidget(accountInput);
-    mainLayout->addLayout(accountLayout);
-    // 密码输入
-    passwordLayout = new QHBoxLayout(this);
-    passwordLabel = new QLabel("密码:", this);
-    passwordInput = new QLineEdit(password, this);
-    passwordLayout->addWidget(passwordLabel);
-    passwordLayout->addWidget(passwordInput);
-    mainLayout->addLayout(passwordLayout);
-    // 开机自启
-    autoStartEnable = new QCheckBox("是否开机自启", this);
-    autoStartEnable->setChecked(autoStartStatus);
-    mainLayout->addWidget(autoStartEnable);
-
-    // 按钮
-    startAutoLogin = new QPushButton("启动自动登录", this);
-    stopAutoLogin = new QPushButton("停止自动登录", this);
-    btnLayout = new QHBoxLayout(this);
-    btnLayout->addWidget(startAutoLogin);
-    btnLayout->addWidget(stopAutoLogin);
-    mainLayout->addLayout(btnLayout);
+    buildUi();
+    applyStyle();
 
     // 检测器初始化
     detector = new ProcessDetector(this);
@@ -165,9 +166,9 @@ MainWidget::MainWidget(QWidget *parent)
     connect(passwordInput, &QLineEdit::textChanged, this, [=]{
         password = passwordInput->text();
     });
-    // 开机自启选择框改变时，为开机自启状态赋值
-    connect(autoStartEnable, &QCheckBox::stateChanged, this, [=]{
-        autoStartStatus = autoStartEnable->isChecked();
+    // 开机自启开关改变时，为开机自启状态赋值
+    connect(autoStartSwitch, &ToggleSwitch::toggled, this, [=](bool checked){
+        autoStartStatus = checked;
     });
 
     // 同步初始状态显示
@@ -175,6 +176,248 @@ MainWidget::MainWidget(QWidget *parent)
 }
 
 MainWidget::~MainWidget() {}
+
+/* 构建现代化界面 */
+void MainWidget::buildUi()
+{
+    // 无边框 + 半透明，自行绘制圆角卡片与投影
+    setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
+    setAttribute(Qt::WA_TranslucentBackground, true);
+    setWindowTitle(appName); // 标题不再携带版本号
+    setWindowIcon(appIcon());
+
+    QVBoxLayout *rootLayout = new QVBoxLayout(this);
+    rootLayout->setContentsMargins(14, 14, 14, 14); // 预留投影空间
+
+    container = new QWidget(this);
+    container->setObjectName("container");
+    rootLayout->addWidget(container);
+
+    QGraphicsDropShadowEffect *shadow = new QGraphicsDropShadowEffect(container);
+    shadow->setBlurRadius(20);
+    shadow->setOffset(0, 3);
+    shadow->setColor(QColor(15, 23, 42, 70));
+    container->setGraphicsEffect(shadow);
+
+    QVBoxLayout *containerLayout = new QVBoxLayout(container);
+    containerLayout->setContentsMargins(0, 0, 0, 0);
+    containerLayout->setSpacing(0);
+
+    /* ---------- 自定义标题栏 ---------- */
+    titleBar = new QWidget(container);
+    titleBar->setObjectName("titleBar");
+    titleBar->setFixedHeight(42);
+    titleBar->setAttribute(Qt::WA_StyledBackground, true);
+
+    QHBoxLayout *titleLayout = new QHBoxLayout(titleBar);
+    titleLayout->setContentsMargins(16, 0, 10, 0);
+    titleLayout->setSpacing(8);
+
+    QLabel *titleIcon = new QLabel(titleBar);
+    titleIcon->setFixedSize(18, 18);
+    titleIcon->setPixmap(appIcon().pixmap(18, 18));
+    titleIcon->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    titleLayout->addWidget(titleIcon);
+
+    QLabel *titleLabel = new QLabel("自动登录工具", titleBar);
+    titleLabel->setObjectName("titleLabel");
+    titleLabel->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    titleLayout->addWidget(titleLabel);
+    titleLayout->addStretch();
+
+    QPushButton *minimizeBtn = new QPushButton("—", titleBar);
+    minimizeBtn->setObjectName("winBtnMin");
+    minimizeBtn->setFixedSize(30, 28);
+    minimizeBtn->setCursor(Qt::PointingHandCursor);
+    minimizeBtn->setToolTip("最小化到托盘");
+    connect(minimizeBtn, &QPushButton::clicked, this, [this]{
+        this->hide();
+        trayIcon->show();
+    });
+
+    QPushButton *closeBtn = new QPushButton("✕", titleBar);
+    closeBtn->setObjectName("winBtnClose");
+    closeBtn->setFixedSize(30, 28);
+    closeBtn->setCursor(Qt::PointingHandCursor);
+    closeBtn->setToolTip("关闭到托盘");
+    connect(closeBtn, &QPushButton::clicked, this, &MainWidget::close);
+
+    titleLayout->addWidget(minimizeBtn);
+    titleLayout->addWidget(closeBtn);
+
+    /* ---------- 内容区 ---------- */
+    QWidget *content = new QWidget(container);
+    content->setAttribute(Qt::WA_StyledBackground, true);
+    QVBoxLayout *contentLayout = new QVBoxLayout(content);
+    contentLayout->setContentsMargins(16, 2, 16, 16);
+    contentLayout->setSpacing(10);
+
+    // 运行状态卡片
+    QFrame *statusCard = new QFrame(content);
+    statusCard->setObjectName("statusCard");
+    statusCard->setAttribute(Qt::WA_StyledBackground, true);
+    QHBoxLayout *statusLayout = new QHBoxLayout(statusCard);
+    statusLayout->setContentsMargins(12, 9, 12, 9);
+    statusLayout->setSpacing(8);
+
+    statusDot = new QLabel(statusCard);
+    statusDot->setFixedSize(10, 10);
+    statusLayout->addWidget(statusDot);
+
+    QLabel *statusTitle = new QLabel("运行状态", statusCard);
+    statusTitle->setObjectName("statusTitle");
+    statusLayout->addWidget(statusTitle);
+    statusLayout->addStretch();
+
+    statusBadge = new QLabel(statusCard);
+    statusBadge->setAlignment(Qt::AlignCenter);
+    statusLayout->addWidget(statusBadge, 0, Qt::AlignVCenter);
+
+    contentLayout->addWidget(statusCard);
+
+    // 账户输入（对应对话框中的 Emp ID / 员工ID），标签与输入框同一行
+    QHBoxLayout *accountLayout = new QHBoxLayout();
+    accountLayout->setSpacing(8);
+    QLabel *accountLabel = new QLabel("账户", content);
+    accountLabel->setObjectName("fieldLabel");
+    accountLabel->setFixedWidth(36);
+    accountInput = new QLineEdit(content);
+    accountInput->setObjectName("input");
+    accountInput->setPlaceholderText("Emp ID / 员工ID");
+    accountInput->setText(account);
+    accountInput->setClearButtonEnabled(true);
+    accountLayout->addWidget(accountLabel);
+    accountLayout->addWidget(accountInput, 1);
+    contentLayout->addLayout(accountLayout);
+
+    // 密码输入，同样与标签同一行
+    QHBoxLayout *passwordLayout = new QHBoxLayout();
+    passwordLayout->setSpacing(8);
+    QLabel *passwordLabel = new QLabel("密码", content);
+    passwordLabel->setObjectName("fieldLabel");
+    passwordLabel->setFixedWidth(36);
+    passwordInput = new QLineEdit(content);
+    passwordInput->setObjectName("input");
+    passwordInput->setEchoMode(QLineEdit::Password);
+    passwordInput->setPlaceholderText("请输入客户端登录密码");
+    passwordInput->setText(password);
+    passwordLayout->addWidget(passwordLabel);
+    passwordLayout->addWidget(passwordInput, 1);
+
+    passwordToggle = new QToolButton(content);
+    passwordToggle->setObjectName("passwordToggle");
+    passwordToggle->setText("显示");
+    passwordToggle->setCursor(Qt::PointingHandCursor);
+    passwordToggle->setFixedWidth(38);
+    passwordLayout->addWidget(passwordToggle);
+    contentLayout->addLayout(passwordLayout);
+
+    connect(passwordToggle, &QToolButton::clicked, this, [this]{
+        const bool hidden = passwordInput->echoMode() == QLineEdit::Password;
+        passwordInput->setEchoMode(hidden ? QLineEdit::Normal : QLineEdit::Password);
+        passwordToggle->setText(hidden ? "隐藏" : "显示");
+    });
+
+    // 开机自启
+    QWidget *switchRow = new QWidget(content);
+    QHBoxLayout *switchLayout = new QHBoxLayout(switchRow);
+    switchLayout->setContentsMargins(0, 2, 0, 2);
+    switchLayout->setSpacing(10);
+    QVBoxLayout *switchTextLayout = new QVBoxLayout();
+    switchTextLayout->setContentsMargins(0, 0, 0, 0);
+    switchTextLayout->setSpacing(2);
+    QLabel *switchTitle = new QLabel("开机自启动", switchRow);
+    switchTitle->setObjectName("switchTitle");
+    QLabel *switchDesc = new QLabel("随 Windows 启动后常驻系统托盘", switchRow);
+    switchDesc->setObjectName("switchDesc");
+    switchTextLayout->addWidget(switchTitle);
+    switchTextLayout->addWidget(switchDesc);
+    switchLayout->addLayout(switchTextLayout);
+    switchLayout->addStretch();
+
+    autoStartSwitch = new ToggleSwitch(switchRow);
+    autoStartSwitch->setChecked(autoStartStatus);
+    switchLayout->addWidget(autoStartSwitch, 0, Qt::AlignVCenter);
+    contentLayout->addWidget(switchRow);
+
+    contentLayout->addStretch();
+
+    // 操作按钮
+    QHBoxLayout *btnLayout = new QHBoxLayout();
+    btnLayout->setSpacing(10);
+    startAutoLogin = new QPushButton("启动", content);
+    startAutoLogin->setObjectName("primaryBtn");
+    startAutoLogin->setCursor(Qt::PointingHandCursor);
+    startAutoLogin->setMinimumHeight(32);
+    stopAutoLogin = new QPushButton("停止", content);
+    stopAutoLogin->setObjectName("secondaryBtn");
+    stopAutoLogin->setCursor(Qt::PointingHandCursor);
+    stopAutoLogin->setMinimumHeight(32);
+    btnLayout->addWidget(startAutoLogin, 1);
+    btnLayout->addWidget(stopAutoLogin, 1);
+    contentLayout->addLayout(btnLayout);
+
+    containerLayout->addWidget(titleBar);
+    containerLayout->addWidget(content, 1);
+
+    // 按内容自适应高度，宽度保持 340
+    const QSize hint = sizeHint();
+    setFixedSize(qMax(340, hint.width()), qMax(280, hint.height()));
+}
+
+/* 现代化样式表 */
+void MainWidget::applyStyle()
+{
+    QFont font;
+    font.setFamilies({"Microsoft YaHei UI", "Segoe UI", "Microsoft YaHei"});
+    font.setPointSize(9);
+    setFont(font);
+
+    setStyleSheet(R"(
+        #container        { background:#ffffff; border:1px solid #e6ebf2; border-radius:14px; }
+        #titleBar         { background:transparent; }
+        #titleLabel       { color:#0f172a; font-size:13px; font-weight:600; }
+
+        #winBtnMin, #winBtnClose { border:none; background:transparent; color:#94a3b8;
+                                   border-radius:7px; font-size:14px; }
+        #winBtnMin:hover  { background:#f1f5f9; color:#0f172a; }
+        #winBtnClose:hover{ background:#ef4444; color:#ffffff; }
+
+        #statusCard       { background:#f8fafc; border:1px solid #eef2f7; border-radius:10px; }
+        #statusTitle      { color:#334155; font-size:12px; font-weight:600; }
+
+        #fieldLabel       { color:#334155; font-size:12px; font-weight:600; }
+        #input            { background:#ffffff; border:1px solid #dbe2ea; border-radius:8px;
+                            padding:6px 10px; font-size:12px; color:#0f172a; }
+        #input:hover      { border-color:#c3ccd8; }
+        #input:focus      { border-color:#2563eb; }
+
+        #passwordToggle   { border:none; background:transparent; color:#2563eb; font-size:12px; }
+        #passwordToggle:hover { color:#1d4ed8; }
+
+        #switchTitle      { color:#334155; font-size:12px; font-weight:600; }
+        #switchDesc       { color:#94a3b8; font-size:11px; }
+
+        #primaryBtn       { background:#2563eb; color:#ffffff; border:none; border-radius:8px;
+                            font-size:12px; font-weight:600; padding:7px 0; }
+        #primaryBtn:hover { background:#1d4ed8; }
+        #primaryBtn:pressed { background:#1e40af; }
+        #primaryBtn:disabled { background:#e2e8f0; color:#94a3b8; }
+
+        #secondaryBtn     { background:#ffffff; color:#475569; border:1px solid #dbe2ea;
+                            border-radius:8px; font-size:12px; font-weight:600; padding:7px 0; }
+        #secondaryBtn:hover { background:#f8fafc; border-color:#94a3b8; color:#0f172a; }
+        #secondaryBtn:pressed { background:#f1f5f9; }
+        #secondaryBtn:disabled { background:#f8fafc; color:#cbd5e1; border-color:#eef2f7; }
+    )");
+
+    // 占位符颜色（QSS 不支持，用调色板设置）
+    QPalette palette = accountInput->palette();
+    palette.setColor(QPalette::PlaceholderText, QColor("#94a3b8"));
+    accountInput->setPalette(palette);
+    passwordInput->setPalette(palette);
+}
+
 /* 重写关闭按钮 */
 void MainWidget::closeEvent(QCloseEvent *event) {
     saveSettings(); // 保存配置
@@ -188,6 +431,36 @@ void MainWidget::closeEvent(QCloseEvent *event) {
     // 阻止默认关闭行为
     event->ignore();
 }
+
+/* 拖动无边框窗口（仅标题栏区域响应） */
+void MainWidget::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton && titleBar
+        && titleBar->rect().contains(titleBar->mapFrom(this, event->position().toPoint()))) {
+        dragging = true;
+        dragOffset = event->globalPosition().toPoint() - frameGeometry().topLeft();
+        event->accept();
+        return;
+    }
+    QWidget::mousePressEvent(event);
+}
+
+void MainWidget::mouseMoveEvent(QMouseEvent *event)
+{
+    if (dragging && (event->buttons() & Qt::LeftButton)) {
+        move(event->globalPosition().toPoint() - dragOffset);
+        event->accept();
+        return;
+    }
+    QWidget::mouseMoveEvent(event);
+}
+
+void MainWidget::mouseReleaseEvent(QMouseEvent *event)
+{
+    dragging = false;
+    QWidget::mouseReleaseEvent(event);
+}
+
 /* 右键菜单退出槽函数 */
 void MainWidget::onExit() {
     this->show();
@@ -199,12 +472,17 @@ void MainWidget::onExit() {
         QApplication::quit(); // 退出程序
     }
 }
+/* 从托盘恢复主窗口 */
+void MainWidget::showFromTray(){
+    this->show();
+    this->raise();
+    this->activateWindow();
+}
 /* 托盘图标点击事件 */
 void MainWidget::onTrayIconActivated(QSystemTrayIcon::ActivationReason reason){
     // 判断交互类型
     if (reason == QSystemTrayIcon::DoubleClick || reason == QSystemTrayIcon::Trigger) {
-        this->show(); // 显示主窗口
-        this->activateWindow(); // 激活窗口
+        showFromTray();
     }
 }
 /* 设置开机自启 */
@@ -235,24 +513,41 @@ void MainWidget::setLoginState(LoginState state) {
     loginState = state;
     updateStatusUI();
 }
-/* 刷新状态标签与托盘提示 */
+/* 刷新状态标签、按钮可用性与托盘提示 */
 void MainWidget::updateStatusUI() {
+    QString dotColor;
+    QString badgeStyle;
+    QString badgeText;
+
     switch (loginState) {
     case LoginState::Running:
-        statueLabel2->setText("运行中");
-        statueLabel2->setStyleSheet("color: green;");
+        dotColor = "#22c55e";
+        badgeText = "运行中";
+        badgeStyle = "background:#dcfce7; color:#15803d;";
         break;
     case LoginState::Handling:
-        statueLabel2->setText("登录中");
-        statueLabel2->setStyleSheet("color: #d18f00;");
+        dotColor = "#f59e0b";
+        badgeText = "登录中";
+        badgeStyle = "background:#fef3c7; color:#b45309;";
         break;
     case LoginState::Stopped:
     default:
-        statueLabel2->setText("已停止");
-        statueLabel2->setStyleSheet("color: red;");
+        dotColor = "#94a3b8";
+        badgeText = "已停止";
+        badgeStyle = "background:#f1f5f9; color:#64748b;";
         break;
     }
-    statueTip = statueLabel2->text();
+
+    statusDot->setStyleSheet(QString("background:%1; border-radius:5px;").arg(dotColor));
+    statusBadge->setText(badgeText);
+    statusBadge->setStyleSheet(badgeStyle + "border-radius:10px; padding:3px 10px; font-size:11px; font-weight:600;");
+
+    // 未启用时只能「启动」，已启用/登录中时只能「停止」
+    const bool running = (loginState != LoginState::Stopped);
+    startAutoLogin->setEnabled(!running);
+    stopAutoLogin->setEnabled(running);
+
+    statueTip = badgeText;
     trayIcon->setToolTip(tip + statueTip);
 }
 /* 开启自动登录 */
@@ -388,8 +683,9 @@ void MainWidget::performLogin(){
         if(findErrorMsg()){
             // 密码错误：停止监测，等用户重新配置密码后手动启动，避免反复重试
             setLoginState(LoginState::Stopped);
-            // 窗口置顶
-            this->setWindowFlag(Qt::WindowStaysOnTopHint);
+            // 窗口置顶并重新显示（切换窗口标志后需要再次 show）
+            setWindowFlag(Qt::FramelessWindowHint, true);
+            setWindowFlag(Qt::WindowStaysOnTopHint, true);
             this->show();
             QMessageBox::critical(this, "密码错误", "密码与工号不匹配, 请重新配置密码...");
             return;

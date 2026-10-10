@@ -1,6 +1,6 @@
 QT       += core gui
 
-greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
+greaterThan(QT_MAJOR_VERSION, 4): QT += widgets svg
 
 CONFIG += c++17
 
@@ -11,11 +11,19 @@ CONFIG += c++17
 SOURCES += \
     main.cpp \
     mainwidget.cpp \
-    processdetector.cpp
+    processdetector.cpp \
+    toggleswitch.cpp
 
 HEADERS += \
     mainwidget.h \
-    processdetector.h
+    processdetector.h \
+    toggleswitch.h
+
+RESOURCES += \
+    resources.qrc
+
+# 由 assets/icons/app.svg 生成的多尺寸图标，内嵌进 exe（资源管理器 / 快捷方式 / 任务栏固定）
+RC_ICONS = $$PWD/assets/icons/app.ico
 
 # Default rules for deployment.
 qnx: target.path = /tmp/$${TARGET}/bin

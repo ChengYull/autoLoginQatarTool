@@ -5,12 +5,16 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPushButton>
+#include <QToolButton>
 #include <QLineEdit>
 #include <QLabel>
-#include <QCheckBox>
+#include <QFrame>
 #include <QSettings>
 #include <QCoreApplication>
+#include <QIcon>
+#include <QPoint>
 #include "processdetector.h"
+#include "toggleswitch.h"
 #include <QMessageBox>
 #include "windows.h"
 #include <QDebug>
@@ -20,6 +24,7 @@
 #include <QCloseEvent>
 #include <QApplication>
 #include <QTimer>
+
 class MainWidget : public QWidget
 {
     Q_OBJECT
@@ -28,28 +33,24 @@ public:
     MainWidget(QWidget *parent = nullptr);
     ~MainWidget();
 
+    static QIcon appIcon();  // 应用图标：窗口 / 任务栏 / 托盘共用，由内嵌 SVG 渲染成多尺寸位图
+
 private:
-    QString appName = "AutoLogin ";
-    QString version = "v1.0.3";
+    const QString appName = "AutoLoginQatarTool";
     QString tip = "";
     QString statueTip = "";
-    QString exePath = "";
 
-    QVBoxLayout* mainLayout;
-    QHBoxLayout* accountLayout;
-    QLabel* accountLabel;
+    /* 界面控件 */
+    QWidget* container;             // 圆角卡片容器
+    QWidget* titleBar;              // 自定义标题栏（可拖动）
+    QLabel* statusDot;              // 状态指示圆点
+    QLabel* statusBadge;            // 状态徽标
     QLineEdit* accountInput;
-    QHBoxLayout* passwordLayout;
-    QLabel* passwordLabel;
     QLineEdit* passwordInput;
-    QPushButton* settingPasswordBtn;
-    QCheckBox* autoStartEnable;
+    QToolButton* passwordToggle;    // 密码显示/隐藏
+    ToggleSwitch* autoStartSwitch;  // 开机自启开关
     QPushButton* startAutoLogin;
     QPushButton* stopAutoLogin;
-    QHBoxLayout* btnLayout;
-    QLabel* statueLabel1;
-    QLabel* statueLabel2;
-    QHBoxLayout* statueLayout;
 
     /* 自动登录状态机 */
     enum class LoginState {
@@ -67,8 +68,14 @@ private:
 
     QSystemTrayIcon *trayIcon; // 系统托盘图标
     QMenu *trayMenu;           // 托盘右键菜单
+    QAction *showAction;       // 显示主界面
     QAction *exitAction;       // 退出动作
 
+    bool dragging = false;     // 窗口拖动中
+    QPoint dragOffset;         // 拖动时鼠标相对窗口左上角的偏移
+
+    void buildUi();            // 构建界面
+    void applyStyle();         // 应用现代化样式表
     void setAutoStart(bool enabled);
     void saveSettings();
     void loadSettings();
@@ -86,8 +93,12 @@ private slots:
     void disableAutoLogin();
     void login();
     void onExit(); // 退出程序
+    void showFromTray(); // 从托盘恢复主窗口
     void onTrayIconActivated(QSystemTrayIcon::ActivationReason reason); // 托盘图标点击事件
 protected:
     void closeEvent(QCloseEvent *event) override; // 重写关闭事件
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
 };
 #endif // MAINWIDGET_H
