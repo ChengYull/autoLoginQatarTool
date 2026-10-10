@@ -5,7 +5,6 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPushButton>
-#include <QToolButton>
 #include <QLineEdit>
 #include <QLabel>
 #include <QFrame>
@@ -24,6 +23,8 @@
 #include <QCloseEvent>
 #include <QApplication>
 #include <QTimer>
+
+class QNetworkAccessManager;
 
 class MainWidget : public QWidget
 {
@@ -47,7 +48,8 @@ private:
     QLabel* statusBadge;            // 状态徽标
     QLineEdit* accountInput;
     QLineEdit* passwordInput;
-    QToolButton* passwordToggle;    // 密码显示/隐藏
+    QAction* passwordEyeAction;     // 密码框右侧的眼睛图标（明文 / 掩码切换）
+    QPushButton* resetPasswordBtn;  // 重置密码（新密码发到钉钉）
     ToggleSwitch* autoStartSwitch;  // 开机自启开关
     QPushButton* startAutoLogin;
     QPushButton* stopAutoLogin;
@@ -60,6 +62,7 @@ private:
     };
 
     ProcessDetector* detector;             // 进程检测器
+    QNetworkAccessManager* networkManager; // 重置密码接口的网络请求
     QTimer* loginTimer;                    // 登录动作延时定时器（可被停止操作取消）
     LoginState loginState = LoginState::Stopped;
     QString account = "";
@@ -68,6 +71,8 @@ private:
 
     QSystemTrayIcon *trayIcon; // 系统托盘图标
     QMenu *trayMenu;           // 托盘右键菜单
+    QAction *statusAction;     // 菜单顶部：当前状态（仅展示）
+    QAction *toggleAction;     // 启动 / 停止自动登录
     QAction *showAction;       // 显示主界面
     QAction *exitAction;       // 退出动作
 
@@ -93,6 +98,8 @@ private slots:
     void disableAutoLogin();
     void login();
     void onExit(); // 退出程序
+    void onTrayToggle(); // 托盘菜单的启停动作
+    void onResetPassword(); // 调用接口重置密码（新密码通过钉钉发送）
     void showFromTray(); // 从托盘恢复主窗口
     void onTrayIconActivated(QSystemTrayIcon::ActivationReason reason); // 托盘图标点击事件
 protected:

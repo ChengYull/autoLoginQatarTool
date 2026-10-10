@@ -14,6 +14,7 @@ Qatar 客户端自动登录工具。常驻系统托盘，自动监测 `QaTar.exe
 | 自动填账户 | 自动向对话框的 `Emp ID / 员工ID` 下拉框填入账户 |
 | 自动填密码 | 先清空输入框再逐字符输入密码,规避残留内容 |
 | 密码错误识别 | 登录后检测错误提示,命中时提示“密码与工号不匹配”,不再重复尝试 |
+| 重置密码 | 调用 `forgetpwd` 接口按工号重置,新密码由服务端发送到钉钉 |
 | 多语言环境自适应 | 同时兼容**简体中文 / 繁体中文 / 英文**三种客户端界面,无需手动切换 |
 | 开机自启 | 卡片式开关,写入 `HKCU\...\CurrentVersion\Run` |
 | 系统托盘 | 关闭窗口仅最小化到托盘,双击托盘图标恢复,右键菜单退出 |
@@ -26,7 +27,7 @@ Qatar 客户端自动登录工具。常驻系统托盘，自动监测 `QaTar.exe
 ## 环境要求
 
 - Windows 10 / 11 (x64)
-- Qt 6.5.x (MinGW 64-bit),需要 **Qt Svg** 模块(工程已通过 `QT += svg` 声明)
+- Qt 6.5.x (MinGW 64-bit),需要 **Qt Svg** 与 **Qt Network** 模块(工程已通过 `QT += svg network` 声明)
 - MinGW 11.2.0 或以上
 
 > 代码使用 `windows.h` 的 Win32 窗口 API 与 `QSystemTrayIcon`,仅支持 Windows 平台。
@@ -70,7 +71,8 @@ windeployqt --release --no-translations autoLoginTool.exe
 > `Unable to find the platform plugin.` 此时可手动拷贝以下文件(与 windeployqt 结果一致但更精简):
 >
 > ```
-> Qt6Core.dll  Qt6Gui.dll  Qt6Widgets.dll  Qt6Svg.dll   # Qt6Svg 必需，图标渲染依赖它
+> Qt6Core.dll  Qt6Gui.dll  Qt6Widgets.dll  Qt6Svg.dll  Qt6Network.dll
+> # Qt6Svg 必需，图标渲染依赖它；Qt6Network 必需，重置密码接口依赖它
 > libgcc_s_seh-1.dll  libstdc++-6.dll  libwinpthread-1.dll
 > platforms\qwindows.dll          # 必需，缺失会直接启动失败
 > styles\qwindowsvistastyle.dll   # 原生控件外观
@@ -105,11 +107,14 @@ release\icogen.exe                 # 直接覆盖 assets\icons\app.ico
 
 1. 运行 `autoLoginTool.exe`,在“账户 / 工号”栏填写工号(`Emp ID`),在“密码”栏填写密码。
 2. 按需打开“开机自启动”开关。
-3. 点击 **启动自动登录**,状态徽标变为绿色的“运行中”。
+3. 点击 **启动自动登录**,状态徽标变为绿色的“运行中”。此状态下账户与密码输入框会被禁用,
+   需要修改请先点 **停止**;托盘图标右键菜单里也有同样的启停项。
 4. 保持程序在托盘后台运行。当 `QaTar.exe` 启动并弹出密码对话框时,程序会延时 2 秒后自动填入账户与密码并点击登录。
 5. 若提示“密码与工号不匹配”,说明账户或密码有误,修正后状态会自动恢复监测。
 6. 点击窗口关闭按钮(或标题栏右上角 ✕)只会最小化到托盘;需右键托盘图标 → **退出** 才会真正结束进程。
-7. 密码默认以圆点掩码显示,需要核对时可点右侧 **显示** 切换为明文。
+7. 密码默认以圆点掩码显示,需要核对时可点输入框内右侧的小眼睛图标切换为明文。
+8. 忘记密码时点密码框右侧的 **重置**,程序会用当前账户调用重置接口,新密码由服务端发送到钉钉;
+   账户为空时会先提示补填。接口成功时响应体只有一个字符 `1`。
 
 ### 配置存储位置
 
@@ -211,7 +216,9 @@ autoLoginQatarTool/
 ├── resources.qrc         # SVG 图标资源
 ├── assets/icons/
 │   ├── app.svg           # 应用图标源文件（窗口 / 任务栏 / 托盘共用）
-│   └── app.ico           # 由 app.svg 导出的多尺寸图标，经 RC_ICONS 内嵌进 exe
+│   ├── app.ico           # 由 app.svg 导出的多尺寸图标，经 RC_ICONS 内嵌进 exe
+│   ├── eye.svg           # 密码框右侧「显示明文」图标
+│   └── eye-off.svg       # 密码框右侧「隐藏明文」图标
 ├── main.cpp              # 程序入口
 ├── mainwidget.h/.cpp     # 主窗口界面、托盘、设置持久化、窗口自动化登录
 ├── tools/icogen/         # 由 app.svg 生成多尺寸 app.ico 的小工具

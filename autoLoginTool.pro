@@ -1,6 +1,6 @@
 QT       += core gui
 
-greaterThan(QT_MAJOR_VERSION, 4): QT += widgets svg
+greaterThan(QT_MAJOR_VERSION, 4): QT += widgets svg network
 
 CONFIG += c++17
 

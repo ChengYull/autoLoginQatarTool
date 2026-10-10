@@ -2,9 +2,13 @@
 
 #include <QGraphicsDropShadowEffect>
 #include <QMouseEvent>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QPainter>
 #include <QPixmap>
 #include <QSvgRenderer>
+#include <QUrlQuery>
 
 #include <string>
 #include <vector>
@@ -22,6 +26,10 @@ const DialogEnv kDialogEnvs[] = {
     { L"密碼對話框",      L"Login" }, // 繁体环境
     { L"Password Dialog", L"Login" }, // 英文环境
 };
+
+/* 重置密码接口：GET ?uid=工号，成功时响应体只有一个字符 1，重置后的密码会发到钉钉 */
+const char kResetPasswordUrl[] = "http://10.170.1.137:18081/api/user/forgetpwd";
+constexpr int kResetPasswordTimeoutMs = 10000;
 
 /* 把内嵌的 SVG 渲染成多尺寸 QIcon。
  * 直接渲染而不是依赖 Qt 的 SVG 图片插件，可保证任意 DPI 下的清晰度，
@@ -125,15 +133,26 @@ MainWidget::MainWidget(QWidget *parent)
         "QMenu { background:#ffffff; border:1px solid #e6ebf2; border-radius:8px; padding:6px; }"
         "QMenu::item { padding:6px 22px; border-radius:6px; color:#334155; font-size:12px; }"
         "QMenu::item:selected { background:#eff6ff; color:#1d4ed8; }"
+        "QMenu::item:disabled { color:#94a3b8; }"
         "QMenu::separator { height:1px; background:#eef2f7; margin:4px 8px; }");
 
+    // 菜单顶部展示当前状态（仅展示，不可点击）
+    statusAction = new QAction(this);
+    statusAction->setEnabled(false);
+    // 启停动作，文案随当前状态在「启动 / 停止」之间切换
+    toggleAction = new QAction(this);
     showAction = new QAction("显示主界面", this);
     exitAction = new QAction("退出", this);
-    trayMenu->addAction(showAction);
+
+    trayMenu->addAction(statusAction);
     trayMenu->addSeparator();
+    trayMenu->addAction(toggleAction);
+    trayMenu->addSeparator();
+    trayMenu->addAction(showAction);
     trayMenu->addAction(exitAction);
     trayIcon->setContextMenu(trayMenu);
 
+    connect(toggleAction, &QAction::triggered, this, &MainWidget::onTrayToggle);
     connect(showAction, &QAction::triggered, this, &MainWidget::showFromTray);
     connect(exitAction, &QAction::triggered, this, &MainWidget::onExit);
     connect(trayIcon, &QSystemTrayIcon::activated, this, &MainWidget::onTrayIconActivated);
@@ -141,6 +160,9 @@ MainWidget::MainWidget(QWidget *parent)
 
     buildUi();
     applyStyle();
+
+    // 重置密码接口
+    networkManager = new QNetworkAccessManager(this);
 
     // 检测器初始化
     detector = new ProcessDetector(this);
@@ -269,8 +291,12 @@ void MainWidget::buildUi()
     statusLayout->addWidget(statusTitle);
     statusLayout->addStretch();
 
+    // 徽标显式给定尺寸：QLabel 的 sizeHint 不会把 QSS 的上下 padding 计入，
+    // 交给布局自适应会出现文字被裁掉一截的情况
     statusBadge = new QLabel(statusCard);
     statusBadge->setAlignment(Qt::AlignCenter);
+    statusBadge->setFixedHeight(22);
+    statusBadge->setMinimumWidth(64);
     statusLayout->addWidget(statusBadge, 0, Qt::AlignVCenter);
 
     contentLayout->addWidget(statusCard);
@@ -290,7 +316,7 @@ void MainWidget::buildUi()
     accountLayout->addWidget(accountInput, 1);
     contentLayout->addLayout(accountLayout);
 
-    // 密码输入，同样与标签同一行
+    // 密码输入，同样与标签同一行；明文切换改为输入框内右侧的小眼睛图标
     QHBoxLayout *passwordLayout = new QHBoxLayout();
     passwordLayout->setSpacing(8);
     QLabel *passwordLabel = new QLabel("密码", content);
@@ -304,19 +330,26 @@ void MainWidget::buildUi()
     passwordLayout->addWidget(passwordLabel);
     passwordLayout->addWidget(passwordInput, 1);
 
-    passwordToggle = new QToolButton(content);
-    passwordToggle->setObjectName("passwordToggle");
-    passwordToggle->setText("显示");
-    passwordToggle->setCursor(Qt::PointingHandCursor);
-    passwordToggle->setFixedWidth(38);
-    passwordLayout->addWidget(passwordToggle);
-    contentLayout->addLayout(passwordLayout);
-
-    connect(passwordToggle, &QToolButton::clicked, this, [this]{
+    passwordEyeAction = passwordInput->addAction(renderSvgIcon(QStringLiteral(":/icons/eye.svg")),
+                                                 QLineEdit::TrailingPosition);
+    passwordEyeAction->setToolTip("显示密码");
+    connect(passwordEyeAction, &QAction::triggered, this, [this]{
         const bool hidden = passwordInput->echoMode() == QLineEdit::Password;
         passwordInput->setEchoMode(hidden ? QLineEdit::Normal : QLineEdit::Password);
-        passwordToggle->setText(hidden ? "隐藏" : "显示");
+        passwordEyeAction->setIcon(renderSvgIcon(hidden ? QStringLiteral(":/icons/eye-off.svg")
+                                                        : QStringLiteral(":/icons/eye.svg")));
+        passwordEyeAction->setToolTip(hidden ? "隐藏密码" : "显示密码");
     });
+
+    // 重置密码：占用的就是原来「显示」按钮的位置
+    resetPasswordBtn = new QPushButton("重置", content);
+    resetPasswordBtn->setObjectName("resetBtn");
+    resetPasswordBtn->setCursor(Qt::PointingHandCursor);
+    resetPasswordBtn->setFixedWidth(46);
+    resetPasswordBtn->setToolTip("调用重置接口，新密码将通过钉钉发送");
+    connect(resetPasswordBtn, &QPushButton::clicked, this, &MainWidget::onResetPassword);
+    passwordLayout->addWidget(resetPasswordBtn);
+    contentLayout->addLayout(passwordLayout);
 
     // 开机自启
     QWidget *switchRow = new QWidget(content);
@@ -391,9 +424,13 @@ void MainWidget::applyStyle()
                             padding:6px 10px; font-size:12px; color:#0f172a; }
         #input:hover      { border-color:#c3ccd8; }
         #input:focus      { border-color:#2563eb; }
+        #input:disabled   { background:#f8fafc; color:#94a3b8; border-color:#eef2f7; }
 
-        #passwordToggle   { border:none; background:transparent; color:#2563eb; font-size:12px; }
-        #passwordToggle:hover { color:#1d4ed8; }
+        #resetBtn         { background:#ffffff; color:#2563eb; border:1px solid #dbe2ea;
+                            border-radius:8px; font-size:12px; font-weight:600; padding:6px 0; }
+        #resetBtn:hover   { background:#eff6ff; border-color:#93c5fd; }
+        #resetBtn:pressed { background:#dbeafe; }
+        #resetBtn:disabled { background:#f8fafc; color:#cbd5e1; border-color:#eef2f7; }
 
         #switchTitle      { color:#334155; font-size:12px; font-weight:600; }
         #switchDesc       { color:#94a3b8; font-size:11px; }
@@ -472,6 +509,56 @@ void MainWidget::onExit() {
         QApplication::quit(); // 退出程序
     }
 }
+/* 托盘菜单的启停动作 */
+void MainWidget::onTrayToggle(){
+    if(loginState == LoginState::Stopped){
+        // 密码为空时会弹出提示，先恢复主窗口，避免提示框挂在隐藏窗口上
+        if(password.isEmpty()) showFromTray();
+        enableAutoLogin();
+    } else {
+        disableAutoLogin();
+    }
+}
+/* 调用接口重置密码：参数为当前账户，新密码会通过钉钉发送 */
+void MainWidget::onResetPassword(){
+    const QString uid = accountInput->text().trimmed();
+    if(uid.isEmpty()){
+        QMessageBox::warning(this, "账户为空", "请先填写账户，再重置密码。");
+        return;
+    }
+
+    QUrl url(QString::fromLatin1(kResetPasswordUrl));
+    QUrlQuery query;
+    query.addQueryItem("uid", uid);
+    url.setQuery(query);
+
+    QNetworkRequest request(url);
+    request.setTransferTimeout(kResetPasswordTimeoutMs);
+
+    // 请求期间禁用按钮，避免重复提交
+    resetPasswordBtn->setEnabled(false);
+
+    QNetworkReply *reply = networkManager->get(request);
+    connect(reply, &QNetworkReply::finished, this, [this, reply]{
+        reply->deleteLater();
+        resetPasswordBtn->setEnabled(true);
+
+        if(reply->error() != QNetworkReply::NoError){
+            QMessageBox::critical(this, "重置失败", "请求失败：" + reply->errorString());
+            return;
+        }
+
+        // 接口成功时的响应体只有一个字符 1
+        const QString body = QString::fromUtf8(reply->readAll()).trimmed();
+        if(body == "1"){
+            QMessageBox::information(this, "重置成功", "密码已重置，新密码将通过钉钉发送，请查收。");
+        } else {
+            QMessageBox::critical(this, "重置失败",
+                                  body.isEmpty() ? QString("接口未返回内容，请检查网络或接口地址。")
+                                                 : "接口返回异常：" + body);
+        }
+    });
+}
 /* 从托盘恢复主窗口 */
 void MainWidget::showFromTray(){
     this->show();
@@ -540,12 +627,21 @@ void MainWidget::updateStatusUI() {
 
     statusDot->setStyleSheet(QString("background:%1; border-radius:5px;").arg(dotColor));
     statusBadge->setText(badgeText);
-    statusBadge->setStyleSheet(badgeStyle + "border-radius:10px; padding:3px 10px; font-size:11px; font-weight:600;");
+    statusBadge->setStyleSheet(badgeStyle + "border-radius:11px; padding:0 12px; font-size:11px; font-weight:600;");
 
     // 未启用时只能「启动」，已启用/登录中时只能「停止」
     const bool running = (loginState != LoginState::Stopped);
     startAutoLogin->setEnabled(!running);
     stopAutoLogin->setEnabled(running);
+
+    // 运行中不允许修改账户与密码，避免监测期间的登录凭据与实际配置不一致
+    accountInput->setEnabled(!running);
+    passwordInput->setEnabled(!running);
+    passwordEyeAction->setEnabled(!running);
+
+    // 同步托盘菜单：顶部状态 + 启停动作文案
+    statusAction->setText("当前状态：" + badgeText);
+    toggleAction->setText(running ? "停止" : "启动");
 
     statueTip = badgeText;
     trayIcon->setToolTip(tip + statueTip);
