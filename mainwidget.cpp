@@ -92,8 +92,7 @@ MainWidget::MainWidget(QWidget *parent)
     // 将菜单设置到托盘图标
     trayIcon->setContextMenu(trayMenu);
     tip = "AutoLoginQatarTool " + version + "\n程序状态: ";
-    statueTip = enableStatus ? "运行中" : "已停止";
-    trayIcon->setToolTip(tip + statueTip);
+    trayIcon->setToolTip(tip + "已停止");
     // 连接退出动作的槽函数
     connect(exitAction, &QAction::triggered, this, &MainWidget::onExit);
     // 连接托盘图标的点击事件
@@ -144,6 +143,10 @@ MainWidget::MainWidget(QWidget *parent)
 
     // 检测器初始化
     detector = new ProcessDetector(this);
+    // 登录延时定时器：单次触发，可被「停止自动登录」提前取消
+    loginTimer = new QTimer(this);
+    loginTimer->setSingleShot(true);
+    connect(loginTimer, &QTimer::timeout, this, &MainWidget::performLogin);
 
     // 启用自动登录
     connect(startAutoLogin, &QPushButton::clicked, this, &MainWidget::enableAutoLogin);
@@ -166,6 +169,9 @@ MainWidget::MainWidget(QWidget *parent)
     connect(autoStartEnable, &QCheckBox::stateChanged, this, [=]{
         autoStartStatus = autoStartEnable->isChecked();
     });
+
+    // 同步初始状态显示
+    updateStatusUI();
 }
 
 MainWidget::~MainWidget() {}
@@ -188,7 +194,8 @@ void MainWidget::onExit() {
     // 确认退出
     if (QMessageBox::question(this, "退出", "确定要退出程序吗？", QMessageBox::Yes | QMessageBox::No) == QMessageBox::Yes) {
         trayIcon->hide(); // 隐藏托盘图标
-        if(enableStatus) disableAutoLogin();
+        // 未停止状态下退出，需要先取消监测与待执行的登录动作
+        if(loginState != LoginState::Stopped) disableAutoLogin();
         QApplication::quit(); // 退出程序
     }
 }
@@ -223,37 +230,55 @@ void MainWidget::loadSettings() {
     password = settings.value("password").toString();
     autoStartStatus = settings.value("autoStart").toBool();
 }
-/* 开启自动登录 */
-void MainWidget::enableAutoLogin(){
-    if(!enableStatus){
-        // 卡控密码为空情况
-        if(password.isEmpty()){
-            QMessageBox::critical(this, "密码为空！", "请先配置密码...");
-            return;
-        }
+/* 切换状态并同步界面显示 */
+void MainWidget::setLoginState(LoginState state) {
+    loginState = state;
+    updateStatusUI();
+}
+/* 刷新状态标签与托盘提示 */
+void MainWidget::updateStatusUI() {
+    switch (loginState) {
+    case LoginState::Running:
         statueLabel2->setText("运行中");
         statueLabel2->setStyleSheet("color: green;");
-
-        detector->startDetection();
-        enableStatus = true;
-        statueTip = enableStatus ? "运行中" : "已停止";
-        trayIcon->setToolTip(tip + statueTip);
-    }else{
-        QMessageBox::critical(this, "自动登录已启用！", "自动登录已启用...");
-    }
-}
-/* 停止自动登录 */
-void MainWidget::disableAutoLogin(){
-    if(enableStatus){
+        break;
+    case LoginState::Handling:
+        statueLabel2->setText("登录中");
+        statueLabel2->setStyleSheet("color: #d18f00;");
+        break;
+    case LoginState::Stopped:
+    default:
         statueLabel2->setText("已停止");
         statueLabel2->setStyleSheet("color: red;");
-        detector->stopDetection();
-        enableStatus = false;
-        statueTip = enableStatus ? "运行中" : "已停止";
-        trayIcon->setToolTip(tip + statueTip);
-    }else{
-        QMessageBox::critical(this, "自动登录未启用！", "自动登录未启用...");
+        break;
     }
+    statueTip = statueLabel2->text();
+    trayIcon->setToolTip(tip + statueTip);
+}
+/* 开启自动登录 */
+void MainWidget::enableAutoLogin(){
+    if(loginState == LoginState::Running){
+        QMessageBox::critical(this, "自动登录已启用！", "自动登录已启用...");
+        return;
+    }
+    // 卡控密码为空情况
+    if(password.isEmpty()){
+        QMessageBox::critical(this, "密码为空！", "请先配置密码...");
+        return;
+    }
+    detector->startDetection();
+    setLoginState(LoginState::Running);
+}
+/* 停止自动登录（处于“登录中”时同样可以停止，并会取消待执行的登录动作） */
+void MainWidget::disableAutoLogin(){
+    if(loginState == LoginState::Stopped){
+        QMessageBox::critical(this, "自动登录未启用！", "自动登录未启用...");
+        return;
+    }
+    // 取消仍在等待中的登录动作，避免停止后又被延时回调重新拉起
+    if(loginTimer->isActive()) loginTimer->stop();
+    detector->stopDetection();
+    setLoginState(LoginState::Stopped);
 }
 /* 查找密码对话框（自动适配简体/繁体/英文环境，不再依赖环境选择） */
 HWND MainWidget::findDialogHwnd(){
@@ -319,42 +344,58 @@ HWND MainWidget::findErrorMsg(){
     }
     return 0x0;
 }
-/* 登录 */
+/* 检测到客户端启动 */
 void MainWidget::login(){
+    // 未处于监测状态，或上一次登录动作仍在处理中时，忽略本次信号
+    if(loginState != LoginState::Running) return;
+    // 密码对话框尚未出现时不做任何处理，避免登录成功后客户端仍驻留
+    // 而导致监测被无意义地反复暂停与恢复
+    if(!findDialogHwnd()) return;
+
     qDebug() << "auto Login!";
-    disableAutoLogin();
-    // 使用 QTimer 延时 2 秒
-    QTimer::singleShot(2000, this, [this]() {
-        HWND hwndPassword = findPasswordHwnd();
-        if (hwndPassword) {
+    detector->stopDetection();
+    setLoginState(LoginState::Handling);
+    // 延时 2 秒，等待对话框与控件完全就绪
+    loginTimer->start(2000);
+}
+/* 执行登录动作（等待期间可被「停止自动登录」取消） */
+void MainWidget::performLogin(){
+    // 等待期间若已被停止，则本次登录不再执行，也不再恢复监测
+    if(loginState != LoginState::Handling) return;
 
-            // 自动填入账户（Emp ID / 员工ID），未配置账户时保持对话框原有内容
-            const QString accountText = account.trimmed();
-            if (!accountText.isEmpty()) {
-                HWND hwndAccount = findAccountHwnd();
-                if (hwndAccount) setComboBoxText(hwndAccount, accountText);
-            }
+    HWND hwndPassword = findPasswordHwnd();
+    if (hwndPassword) {
 
-            // 先清空原密码内容
-            SendMessage(hwndPassword, WM_SETTEXT, 0, (LPARAM)L"");
-            // 输入密码
-            for (QChar ch : password) {
-                SendMessage(hwndPassword, WM_CHAR, ch.unicode(), 0);
-            }
-
-            HWND hwndLogin = findLoginHwnd();
-            if(hwndLogin){
-                // 发送 BM_CLICK 消息，模拟点击按钮
-                SendMessage(hwndLogin, BM_CLICK, 0, 0);
-            }
-            if(findErrorMsg()){
-                // 窗口置顶
-                this->setWindowFlag(Qt::WindowStaysOnTopHint);
-                this->show();
-                QMessageBox::critical(this, "密码错误", "密码与工号不匹配, 请重新配置密码...");
-                return;
-            }
+        // 自动填入账户（Emp ID / 员工ID），未配置账户时保持对话框原有内容
+        const QString accountText = account.trimmed();
+        if (!accountText.isEmpty()) {
+            HWND hwndAccount = findAccountHwnd();
+            if (hwndAccount) setComboBoxText(hwndAccount, accountText);
         }
-        enableAutoLogin();
-    });
+
+        // 先清空原密码内容
+        SendMessage(hwndPassword, WM_SETTEXT, 0, (LPARAM)L"");
+        // 输入密码
+        for (QChar ch : password) {
+            SendMessage(hwndPassword, WM_CHAR, ch.unicode(), 0);
+        }
+
+        HWND hwndLogin = findLoginHwnd();
+        if(hwndLogin){
+            // 发送 BM_CLICK 消息，模拟点击按钮
+            SendMessage(hwndLogin, BM_CLICK, 0, 0);
+        }
+        if(findErrorMsg()){
+            // 密码错误：停止监测，等用户重新配置密码后手动启动，避免反复重试
+            setLoginState(LoginState::Stopped);
+            // 窗口置顶
+            this->setWindowFlag(Qt::WindowStaysOnTopHint);
+            this->show();
+            QMessageBox::critical(this, "密码错误", "密码与工号不匹配, 请重新配置密码...");
+            return;
+        }
+    }
+    // 登录动作执行完毕，恢复监测
+    detector->startDetection();
+    setLoginState(LoginState::Running);
 }

@@ -2,7 +2,6 @@
 #define PROCESSDETECTOR_H
 
 #include <QObject>
-#include <QProcess>
 #include <QTimer>
 #include <QDebug>
 
@@ -21,6 +20,10 @@ private slots:
     void checkProcess();
 
 private:
+    // 轮询间隔（毫秒）。改用系统进程快照接口后不再创建子进程，
+    // 单次检测约 7~9 毫秒（随系统进程数变化），可按需要取较小间隔。
+    static constexpr int kPollIntervalMs = 500;
+
     QTimer *timer;
 
 };

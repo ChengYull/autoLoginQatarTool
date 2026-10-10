@@ -10,7 +10,7 @@ Qatar 客户端自动登录工具。常驻系统托盘，自动监测 `QaTar.exe
 
 | 功能 | 说明 |
 | --- | --- |
-| 进程监测 | 每秒检测一次 `QaTar.exe` 是否启动,启动后自动触发登录 |
+| 进程监测 | 每 500 毫秒用系统进程快照检测一次 `QaTar.exe`,启动后自动触发登录 |
 | 自动填账户 | 自动向对话框的 `Emp ID / 员工ID` 下拉框填入账户 |
 | 自动填密码 | 先清空输入框再逐字符输入密码,规避残留内容 |
 | 密码错误识别 | 登录后检测错误提示,命中时提示“密码与工号不匹配”,不再重复尝试 |
@@ -124,14 +124,14 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run\autoLoginQatarAp
 
 ```
 ProcessDetector                      MainWidget
-  QTimer(1s) ──► tasklist 查询 ──► loginSignal ──► 查找对话框
+  QTimer(0.5s) ──► 进程快照 ──► loginSignal ──► 查找对话框
                                                     ├─ 填入账户
                                                     ├─ 填入密码
                                                     ├─ 点击登录
                                                     └─ 检测错误提示
 ```
 
-登录流程的关键点(均在 `mainwidget.cpp`):
+登录流程的关键点(`mainwidget.cpp` 与 `processdetector.cpp`):
 
 **1. 环境自动识别**
 
@@ -168,6 +168,24 @@ Right: 0, Area: 0x99, ec: -3(远端响应帐密错误)
 
 若账号已在 `ComboBox` 的下拉列表中,则用 `CB_SETCURSEL` 直接选中;否则回退为 `WM_SETTEXT` 写入文本。账户留空时**跳过填充**,保留对话框原有内容,避免清空导致登录失败。
 
+**5. 启停状态机**
+
+`MainWidget` 用三态枚举维护状态,避免早期“先停后启”写法在延时窗口内出现状态不一致(那时点「停止」会误报“自动登录未启用”):
+
+| 状态 | 含义 | 界面显示 |
+| --- | --- | --- |
+| `Stopped` | 未启用 | 已停止(红) |
+| `Running` | 监测中 | 运行中(绿) |
+| `Handling` | 已检测到客户端,正在执行登录动作 | 登录中(橙) |
+
+`Handling` 期间点「停止自动登录」是合法操作:会取消待执行的登录动作(`loginTimer->stop()`)并回到 `Stopped`,不会被延时回调重新拉起。另外 `login()` 进入处理前会先确认对话框确实存在,登录成功后客户端仍驻留时不会反复空转。
+
+**6. 进程监测的开销**
+
+原先每轮起一个 `tasklist` 子进程并同步 `waitForFinished()`,实测单次约 **200 毫秒**,期间界面线程完全阻塞。现改为一次 `CreateToolhelp32Snapshot` 系统调用,实测约 **7~9 毫秒**(随系统进程数变化),不再创建子进程,界面无可感知卡顿。
+
+> 本机实测 `EnumProcesses`(只取 PID 列表)也需约 6.8 毫秒,说明该量级是进程枚举本身的开销下限,与 API 选型关系不大。
+
 ---
 
 ## 项目结构
@@ -177,7 +195,7 @@ autoLoginQatarTool/
 ├── autoLoginTool.pro     # qmake 工程文件
 ├── main.cpp              # 程序入口
 ├── mainwidget.h/.cpp     # 主窗口、托盘、设置持久化、窗口自动化登录
-├── processdetector.h/.cpp# 基于 tasklist 的进程轮询检测
+├── processdetector.h/.cpp# 基于系统进程快照(Toolhelp32)的进程轮询检测
 ├── README.md
 └── .gitignore
 ```

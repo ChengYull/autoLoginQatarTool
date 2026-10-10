@@ -19,6 +19,7 @@
 #include <QAction>
 #include <QCloseEvent>
 #include <QApplication>
+#include <QTimer>
 class MainWidget : public QWidget
 {
     Q_OBJECT
@@ -50,8 +51,16 @@ private:
     QLabel* statueLabel2;
     QHBoxLayout* statueLayout;
 
+    /* 自动登录状态机 */
+    enum class LoginState {
+        Stopped,   // 未启用
+        Running,   // 监测中
+        Handling   // 已检测到客户端，正在执行登录动作
+    };
+
     ProcessDetector* detector;             // 进程检测器
-    bool enableStatus = false;
+    QTimer* loginTimer;                    // 登录动作延时定时器（可被停止操作取消）
+    LoginState loginState = LoginState::Stopped;
     QString account = "";
     QString password = "";
     bool autoStartStatus = false;
@@ -63,6 +72,9 @@ private:
     void setAutoStart(bool enabled);
     void saveSettings();
     void loadSettings();
+    void setLoginState(LoginState state);  // 切换状态并同步界面显示
+    void updateStatusUI();                 // 刷新状态标签与托盘提示
+    void performLogin();                   // 执行登录动作
     HWND findDialogHwnd();   // 查找密码对话框（自动适配简体/繁体/英文环境）
     HWND findPanelHwnd();    // 查找对话框内的面板控件
     HWND findAccountHwnd();  // 查找账户（Emp ID / 员工ID）下拉框
