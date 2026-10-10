@@ -1,0 +1,12 @@
+{
+  "name": "auto-login-qatar-tool",
+  "version": "1.0.3",
+  "private": true,
+  "description": "Qatar 客户端自动登录工具的构建脚本（仅使用 Enigma Virtual Box 封装 dist 目录）",
+  "scripts": {
+    "pack": "node tools/pack/pack.js"
+  },
+  "devDependencies": {
+    "generate-evb": "^1.0.3"
+  }
+}

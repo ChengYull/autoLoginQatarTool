@@ -103,6 +103,27 @@ release\icogen.exe                 # 直接覆盖 assets\icons\app.ico
 
 ---
 
+## 打包为单文件(可选)
+
+运行库与插件分发麻烦时,可以用 [Enigma Virtual Box](https://enigmaprotector.com/en/aboutvb.html)
+把整个 `dist` 目录封装进主程序,得到一个可单独分发的 exe。工程文件由
+[generate-evb](https://www.npmjs.com/package/generate-evb) 生成,无需手动操作 GUI:
+
+```powershell
+npm install          # 首次安装 generate-evb
+npm run pack         # 生成 build\pack\AutoLoginQatarTool.exe
+```
+
+`tools/pack/pack.js` 会读取 `dist\`(主程序 + 运行库 + 插件)生成 `build\pack\autoLoginTool.evb`,
+再调用 `enigmavbconsole.exe` 完成封装。`enigmavbconsole.exe` 默认按
+`D:\tool\Enigma Virtual Box\` 查找,安装在别处时用环境变量 `ENIGMAVB_CONSOLE` 指定。
+
+> 只生成工程文件、不执行封装:`npm run pack -- --evb-only`
+>
+> 封装产物在 `build\pack\` 下,该目录已被 `.gitignore` 忽略。
+
+---
+
 ## 使用说明
 
 1. 运行 `autoLoginTool.exe`,在“账户 / 工号”栏填写工号(`Emp ID`),在“密码”栏填写密码。
@@ -222,6 +243,7 @@ autoLoginQatarTool/
 ├── main.cpp              # 程序入口
 ├── mainwidget.h/.cpp     # 主窗口界面、托盘、设置持久化、窗口自动化登录
 ├── tools/icogen/         # 由 app.svg 生成多尺寸 app.ico 的小工具
+├── tools/pack/           # 生成 evb 并调用 Enigma Virtual Box 封装为单文件 exe
 ├── toggleswitch.h/.cpp   # 开机自启用的现代化滑动开关（纯 QPainter 绘制）
 ├── processdetector.h/.cpp# 基于系统进程快照(Toolhelp32)的进程轮询检测
 ├── README.md
