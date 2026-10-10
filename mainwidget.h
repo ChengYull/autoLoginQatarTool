@@ -14,8 +14,6 @@
 #include <QMessageBox>
 #include "windows.h"
 #include <QDebug>
-#include <QRadioButton>
-#include <QButtonGroup>
 #include <QSystemTrayIcon>
 #include <QMenu>
 #include <QAction>
@@ -37,6 +35,9 @@ private:
     QString exePath = "";
 
     QVBoxLayout* mainLayout;
+    QHBoxLayout* accountLayout;
+    QLabel* accountLabel;
+    QLineEdit* accountInput;
     QHBoxLayout* passwordLayout;
     QLabel* passwordLabel;
     QLineEdit* passwordInput;
@@ -48,14 +49,12 @@ private:
     QLabel* statueLabel1;
     QLabel* statueLabel2;
     QHBoxLayout* statueLayout;
-    QRadioButton *radio1;
-    QRadioButton *radio2;
 
     ProcessDetector* detector;             // 进程检测器
     bool enableStatus = false;
+    QString account = "";
     QString password = "";
     bool autoStartStatus = false;
-    bool isSimpleEnvironment = true;
 
     QSystemTrayIcon *trayIcon; // 系统托盘图标
     QMenu *trayMenu;           // 托盘右键菜单
@@ -64,6 +63,9 @@ private:
     void setAutoStart(bool enabled);
     void saveSettings();
     void loadSettings();
+    HWND findDialogHwnd();   // 查找密码对话框（自动适配简体/繁体/英文环境）
+    HWND findPanelHwnd();    // 查找对话框内的面板控件
+    HWND findAccountHwnd();  // 查找账户（Emp ID / 员工ID）下拉框
     HWND findPasswordHwnd();
     HWND findLoginHwnd();
     HWND findErrorMsg();
