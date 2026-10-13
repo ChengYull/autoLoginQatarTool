@@ -10,6 +10,7 @@
 #include <QSvgRenderer>
 #include <QUrlQuery>
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,16 @@ const DialogEnv kDialogEnvs[] = {
 /* 重置密码接口：GET ?uid=工号，成功时响应体只有一个字符 1，重置后的密码会发到钉钉 */
 const char kResetPasswordUrl[] = "http://10.170.1.137:18081/api/user/forgetpwd";
 constexpr int kResetPasswordTimeoutMs = 10000;
+
+/* QtPacker 凭据对话框的标题带有版本号与运行环境（如 1.33.9.3 (Production)），
+ * 无法整串匹配，只取其中固定不变的一段作为识别依据 */
+const wchar_t kPackerDialogTitleKey[] = L"Enter your credential";
+/* QtPacker 登录后的结果校验：延时与最多校验次数（登录为异步，可能需要等待服务端返回） */
+constexpr int kPackerVerifyDelayMs = 1500;
+constexpr int kPackerMaxVerifyCount = 6;
+/* QtPacker 登录失败时弹出的提示框标题与正文关键字 */
+const wchar_t kPackerErrorTitle[] = L"Message";
+const char kPackerErrorTextKey[] = "Fail to login";
 
 /* 把内嵌的 SVG 渲染成多尺寸 QIcon。
  * 直接渲染而不是依赖 Qt 的 SVG 图片插件，可保证任意 DPI 下的清晰度，
@@ -110,6 +121,67 @@ bool setComboBoxText(HWND hwnd, const QString &text)
     return true;
 }
 
+/* 按“标题包含子串”枚举顶层窗口的上下文 */
+struct FindTitleContext {
+    const wchar_t *needle; // 需要在标题中查找的子串
+    HWND result;           // 命中的窗口句柄
+};
+
+BOOL CALLBACK findTitleProc(HWND hwnd, LPARAM lParam)
+{
+    auto *ctx = reinterpret_cast<FindTitleContext *>(lParam);
+    if (!IsWindowVisible(hwnd)) return TRUE;
+    wchar_t buffer[512] = {0};
+    GetWindowTextW(hwnd, buffer, 511);
+    if (buffer[0] && wcsstr(buffer, ctx->needle)) {
+        ctx->result = hwnd;
+        return FALSE;
+    }
+    return TRUE;
+}
+
+/* 按“标题包含子串”查找顶层窗口（QtPacker 的标题含版本号，无法整串匹配） */
+HWND findTopWindowByTitle(const wchar_t *needle)
+{
+    FindTitleContext ctx{needle, 0x0};
+    EnumWindows(findTitleProc, reinterpret_cast<LPARAM>(&ctx));
+    return ctx.result;
+}
+
+/* 递归收集父窗口下所有指定类名的后代控件。
+ * QtPacker 的控件可能嵌在面板容器内，只取直接子控件会漏掉，故做深度遍历。 */
+void collectDescendants(HWND parent, const wchar_t *className, QList<HWND> &out)
+{
+    if (!parent) return;
+    HWND child = NULL;
+    while ((child = FindWindowExW(parent, child, NULL, NULL)) != NULL) {
+        if (className) {
+            wchar_t buffer[256] = {0};
+            GetClassNameW(child, buffer, 255);
+            if (_wcsicmp(buffer, className) == 0) out.append(child);
+        } else {
+            out.append(child);
+        }
+        collectDescendants(child, className, out);
+    }
+}
+
+/* 取出窗口内所有可见的 Edit 控件，按屏幕纵坐标自小到大排序 */
+QList<HWND> visibleEditsSorted(HWND root)
+{
+    QList<HWND> edits;
+    collectDescendants(root, L"Edit", edits);
+
+    QList<HWND> visible;
+    for (HWND edit : edits) {
+        if (IsWindowVisible(edit)) visible.append(edit);
+    }
+    std::sort(visible.begin(), visible.end(), [](HWND a, HWND b){
+        return windowTop(a) < windowTop(b);
+    });
+    return visible;
+}
+
 } // namespace
 
 QIcon MainWidget::appIcon()
@@ -170,6 +242,11 @@ MainWidget::MainWidget(QWidget *parent)
     loginTimer = new QTimer(this);
     loginTimer->setSingleShot(true);
     connect(loginTimer, &QTimer::timeout, this, &MainWidget::performLogin);
+
+    // QtPacker 登录结果校验定时器：登录为异步，点击后延时检查是否弹出失败提示框
+    verifyTimer = new QTimer(this);
+    verifyTimer->setSingleShot(true);
+    connect(verifyTimer, &QTimer::timeout, this, &MainWidget::verifyQtPackerLogin);
 
     // 启用自动登录
     connect(startAutoLogin, &QPushButton::clicked, this, &MainWidget::enableAutoLogin);
@@ -309,7 +386,7 @@ void MainWidget::buildUi()
     accountLabel->setFixedWidth(36);
     accountInput = new QLineEdit(content);
     accountInput->setObjectName("input");
-    accountInput->setPlaceholderText("Emp ID / 员工ID");
+    accountInput->setPlaceholderText("Emp ID / 员工ID / Uid");
     accountInput->setText(account);
     accountInput->setClearButtonEnabled(true);
     accountLayout->addWidget(accountLabel);
@@ -666,8 +743,10 @@ void MainWidget::disableAutoLogin(){
         QMessageBox::critical(this, "自动登录未启用！", "自动登录未启用...");
         return;
     }
-    // 取消仍在等待中的登录动作，避免停止后又被延时回调重新拉起
+    // 取消仍在等待中的登录动作与校验，避免停止后又被延时回调重新拉起
     if(loginTimer->isActive()) loginTimer->stop();
+    if(verifyTimer->isActive()) verifyTimer->stop();
+    packerVerifyCount = 0;
     detector->stopDetection();
     setLoginState(LoginState::Stopped);
 }
@@ -735,13 +814,59 @@ HWND MainWidget::findErrorMsg(){
     }
     return 0x0;
 }
+/* 查找 QtPacker 凭据对话框（标题形如 "QtPacker 1.33.9.3 (Production) - Enter your credential"） */
+HWND MainWidget::findPackerDialogHwnd(){
+    return findTopWindowByTitle(kPackerDialogTitleKey);
+}
+/* 查找 QtPacker Uid 输入框（对话框内最上方的可见 Edit） */
+HWND MainWidget::findPackerAccountHwnd(){
+    const QList<HWND> edits = visibleEditsSorted(findPackerDialogHwnd());
+    return edits.isEmpty() ? 0x0 : edits.first();
+}
+/* 查找 QtPacker Pwd 输入框（对话框内最下方的可见 Edit） */
+HWND MainWidget::findPackerPasswordHwnd(){
+    const QList<HWND> edits = visibleEditsSorted(findPackerDialogHwnd());
+    return edits.size() < 2 ? 0x0 : edits.last();
+}
+/* 查找 QtPacker Login 按钮 */
+HWND MainWidget::findPackerLoginHwnd(){
+    QList<HWND> buttons;
+    collectDescendants(findPackerDialogHwnd(), L"Button", buttons);
+    for (HWND button : buttons) {
+        if (!IsWindowVisible(button)) continue;
+        wchar_t buffer[128] = {0};
+        GetWindowTextW(button, buffer, 127);
+        if (QString::fromWCharArray(buffer).trimmed().compare("Login", Qt::CaseInsensitive) == 0) {
+            return button;
+        }
+    }
+    return 0x0;
+}
+/* 查找 QtPacker 登录失败提示框（标题为 Message 的对话框，正文含 Fail to login） */
+HWND MainWidget::findPackerErrorMsg(){
+    HWND hwnd = FindWindowW(L"#32770", kPackerErrorTitle);
+    if (!hwnd) return 0x0;
+    for (HWND hwndStatic : directChildren(hwnd, L"Static")) {
+        wchar_t buffer[512] = {0};
+        GetWindowTextW(hwndStatic, buffer, 511);
+        if (QString::fromWCharArray(buffer).contains(kPackerErrorTextKey)) return hwnd;
+    }
+    return 0x0;
+}
 /* 检测到客户端启动 */
 void MainWidget::login(){
     // 未处于监测状态，或上一次登录动作仍在处理中时，忽略本次信号
     if(loginState != LoginState::Running) return;
-    // 密码对话框尚未出现时不做任何处理，避免登录成功后客户端仍驻留
+
+    // 两个客户端的凭据对话框都未出现时不做任何处理，避免登录成功后客户端仍驻留
     // 而导致监测被无意义地反复暂停与恢复
-    if(!findDialogHwnd()) return;
+    if(findDialogHwnd()){
+        activeTarget = LoginTarget::Qatar;
+    } else if(findPackerDialogHwnd()){
+        activeTarget = LoginTarget::QtPacker;
+    } else {
+        return;
+    }
 
     qDebug() << "auto Login!";
     detector->stopDetection();
@@ -749,11 +874,19 @@ void MainWidget::login(){
     // 延时 2 秒，等待对话框与控件完全就绪
     loginTimer->start(2000);
 }
-/* 执行登录动作（等待期间可被「停止自动登录」取消） */
+/* 执行登录动作（等待期间可被「停止自动登录」取消），按当前客户端分发 */
 void MainWidget::performLogin(){
     // 等待期间若已被停止，则本次登录不再执行，也不再恢复监测
     if(loginState != LoginState::Handling) return;
 
+    if(activeTarget == LoginTarget::QtPacker){
+        performQtPackerLogin();
+    } else {
+        performQatarLogin();
+    }
+}
+/* 执行 Qatar 客户端登录动作 */
+void MainWidget::performQatarLogin(){
     HWND hwndPassword = findPasswordHwnd();
     if (hwndPassword) {
 
@@ -777,17 +910,85 @@ void MainWidget::performLogin(){
             SendMessage(hwndLogin, BM_CLICK, 0, 0);
         }
         if(findErrorMsg()){
-            // 密码错误：停止监测，等用户重新配置密码后手动启动，避免反复重试
-            setLoginState(LoginState::Stopped);
-            // 窗口置顶并重新显示（切换窗口标志后需要再次 show）
-            setWindowFlag(Qt::FramelessWindowHint, true);
-            setWindowFlag(Qt::WindowStaysOnTopHint, true);
-            this->show();
-            QMessageBox::critical(this, "密码错误", "密码与工号不匹配, 请重新配置密码...");
+            reportPasswordError();
             return;
         }
     }
     // 登录动作执行完毕，恢复监测
     detector->startDetection();
     setLoginState(LoginState::Running);
+}
+/* 执行 QtPacker 客户端登录动作：
+ * 填入 Uid / Pwd 后异步点击 Login，再交由 verifyTimer 延后校验登录结果 */
+void MainWidget::performQtPackerLogin(){
+    HWND hwndDialog = findPackerDialogHwnd();
+    if(!hwndDialog){
+        // 对话框已消失（可能已被手动登录），直接恢复监测
+        detector->startDetection();
+        setLoginState(LoginState::Running);
+        return;
+    }
+
+    // 自动填入账户（Uid），未配置账户时保持对话框原有内容
+    const QString accountText = account.trimmed();
+    HWND hwndAccount = findPackerAccountHwnd();
+    if(hwndAccount && !accountText.isEmpty()){
+        const std::wstring value = accountText.toStdWString();
+        SendMessage(hwndAccount, WM_SETTEXT, 0, (LPARAM)value.c_str());
+    }
+
+    // 密码框：先清空再逐字符输入，规避残留内容
+    HWND hwndPassword = findPackerPasswordHwnd();
+    if(hwndPassword){
+        SendMessage(hwndPassword, WM_SETTEXT, 0, (LPARAM)L"");
+        for (QChar ch : password) {
+            SendMessage(hwndPassword, WM_CHAR, ch.unicode(), 0);
+        }
+    }
+
+    HWND hwndLogin = findPackerLoginHwnd();
+    if(!hwndLogin){
+        // 控件尚未就绪，恢复监测等待下一轮重试
+        detector->startDetection();
+        setLoginState(LoginState::Running);
+        return;
+    }
+
+    // 用 PostMessage 异步点击：登录失败时客户端会弹出模态提示框，
+    // 若用 SendMessage 将阻塞本进程的界面线程
+    PostMessage(hwndLogin, BM_CLICK, 0, 0);
+    packerVerifyCount = 0;
+    verifyTimer->start(kPackerVerifyDelayMs);
+}
+/* 校验 QtPacker 登录结果：出现失败提示框即判定密码错误；对话框关闭则视为成功 */
+void MainWidget::verifyQtPackerLogin(){
+    if(loginState != LoginState::Handling) return;
+
+    if(findPackerErrorMsg()){
+        reportPasswordError();
+        return;
+    }
+
+    if(findPackerDialogHwnd() && ++packerVerifyCount < kPackerMaxVerifyCount){
+        // 对话框仍在且未出现错误：登录可能仍在处理中，等待后再校验
+        verifyTimer->start(kPackerVerifyDelayMs);
+        return;
+    }
+
+    // 登录成功或等待超时，恢复监测
+    packerVerifyCount = 0;
+    detector->startDetection();
+    setLoginState(LoginState::Running);
+}
+/* 密码错误：停止监测，窗口置顶提示，等用户重新配置密码后手动启动，避免反复重试 */
+void MainWidget::reportPasswordError(){
+    setLoginState(LoginState::Stopped);
+    if(loginTimer->isActive()) loginTimer->stop();
+    if(verifyTimer->isActive()) verifyTimer->stop();
+    packerVerifyCount = 0;
+    // 窗口置顶并重新显示（切换窗口标志后需要再次 show）
+    setWindowFlag(Qt::FramelessWindowHint, true);
+    setWindowFlag(Qt::WindowStaysOnTopHint, true);
+    this->show();
+    QMessageBox::critical(this, "密码错误", "密码与工号不匹配, 请重新配置密码...");
 }

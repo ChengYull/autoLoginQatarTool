@@ -61,9 +61,18 @@ private:
         Handling   // 已检测到客户端，正在执行登录动作
     };
 
+    /* 本次登录动作对应的客户端 */
+    enum class LoginTarget {
+        Qatar,     // QaTar.exe
+        QtPacker   // QtPacker.exe
+    };
+
     ProcessDetector* detector;             // 进程检测器
     QNetworkAccessManager* networkManager; // 重置密码接口的网络请求
     QTimer* loginTimer;                    // 登录动作延时定时器（可被停止操作取消）
+    QTimer* verifyTimer;                   // QtPacker 登录结果校验定时器
+    int packerVerifyCount = 0;             // QtPacker 登录结果已校验次数
+    LoginTarget activeTarget = LoginTarget::Qatar; // 当前正在处理的客户端
     LoginState loginState = LoginState::Stopped;
     QString account = "";
     QString password = "";
@@ -86,13 +95,24 @@ private:
     void loadSettings();
     void setLoginState(LoginState state);  // 切换状态并同步界面显示
     void updateStatusUI();                 // 刷新状态标签与托盘提示
-    void performLogin();                   // 执行登录动作
+    void performLogin();                   // 执行登录动作（按当前客户端分发）
+    void performQatarLogin();              // 执行 Qatar 客户端登录动作
+    void performQtPackerLogin();           // 执行 QtPacker 客户端登录动作
+    void verifyQtPackerLogin();            // 校验 QtPacker 登录结果（失败提示框 / 对话框是否关闭）
+    void reportPasswordError();            // 密码错误：停止监测并弹出提示
+
     HWND findDialogHwnd();   // 查找密码对话框（自动适配简体/繁体/英文环境）
     HWND findPanelHwnd();    // 查找对话框内的面板控件
     HWND findAccountHwnd();  // 查找账户（Emp ID / 员工ID）下拉框
     HWND findPasswordHwnd();
     HWND findLoginHwnd();
     HWND findErrorMsg();
+
+    HWND findPackerDialogHwnd();   // 查找 QtPacker 凭据对话框（标题含 Enter your credential）
+    HWND findPackerAccountHwnd();  // 查找 QtPacker Uid 输入框
+    HWND findPackerPasswordHwnd(); // 查找 QtPacker Pwd 输入框
+    HWND findPackerLoginHwnd();    // 查找 QtPacker Login 按钮
+    HWND findPackerErrorMsg();     // 查找 QtPacker 登录失败提示框
 private slots:
     void enableAutoLogin();
     void disableAutoLogin();

@@ -1,6 +1,6 @@
 # AutoLoginQatarTool
 
-Qatar 客户端自动登录工具。常驻系统托盘，自动监测 `QaTar.exe` 启动,并在其弹出“密码对话框”时自动填入账户与密码、点击登录。
+Qatar / QtPacker 客户端自动登录工具。常驻系统托盘，自动监测 `QaTar.exe`、`QtPacker.exe` 启动，并在其弹出登录对话框时自动填入账户与密码、点击登录。
 
 当前版本:`v1.0.3`(Qt Widgets / Windows 桌面,界面为无边框圆角卡片风格,窗口与托盘标题均不显示版本号)
 
@@ -10,10 +10,11 @@ Qatar 客户端自动登录工具。常驻系统托盘，自动监测 `QaTar.exe
 
 | 功能 | 说明 |
 | --- | --- |
-| 进程监测 | 每 500 毫秒用系统进程快照检测一次 `QaTar.exe`,启动后自动触发登录 |
-| 自动填账户 | 自动向对话框的 `Emp ID / 员工ID` 下拉框填入账户 |
+| 进程监测 | 每 500 毫秒用系统进程快照检测一次 `QaTar.exe` 与 `QtPacker.exe`,启动后自动触发登录 |
+| 多客户端支持 | 同一套账户 / 密码同时适配 **Qatar** 与 **QtPacker** 两个客户端,凭据对话框出现时自动识别并登录 |
+| 自动填账户 | Qatar 填入 `Emp ID / 员工ID` 下拉框;QtPacker 填入 `Uid` 输入框 |
 | 自动填密码 | 先清空输入框再逐字符输入密码,规避残留内容 |
-| 密码错误识别 | 登录后检测错误提示,命中时提示“密码与工号不匹配”,不再重复尝试 |
+| 密码错误识别 | 登录后检测错误提示（Qatar 匹配错误返回码,QtPacker 匹配 `Fail to login` 提示框）,命中时提示“密码与工号不匹配”,不再重复尝试 |
 | 重置密码 | 调用 `forgetpwd` 接口按工号重置,新密码由服务端发送到钉钉 |
 | 多语言环境自适应 | 同时兼容**简体中文 / 繁体中文 / 英文**三种客户端界面,无需手动切换 |
 | 开机自启 | 卡片式开关,写入 `HKCU\...\CurrentVersion\Run` |
@@ -130,7 +131,7 @@ npm run pack         # 生成 build\pack\AutoLoginQatarTool.exe
 2. 按需打开“开机自启动”开关。
 3. 点击 **启动自动登录**,状态徽标变为绿色的“运行中”。此状态下账户与密码输入框会被禁用,
    需要修改请先点 **停止**;托盘图标右键菜单里也有同样的启停项。
-4. 保持程序在托盘后台运行。当 `QaTar.exe` 启动并弹出密码对话框时,程序会延时 2 秒后自动填入账户与密码并点击登录。
+4. 保持程序在托盘后台运行。当 `QaTar.exe` 或 `QtPacker.exe` 启动并弹出登录对话框时,程序会延时 2 秒后自动填入账户与密码并点击登录。
 5. 若提示“密码与工号不匹配”,说明账户或密码有误,修正后状态会自动恢复监测。
 6. 点击窗口关闭按钮(或标题栏右上角 ✕)只会最小化到托盘;需右键托盘图标 → **退出** 才会真正结束进程。
 7. 密码默认以圆点掩码显示,需要核对时可点输入框内右侧的小眼睛图标切换为明文。
@@ -164,15 +165,21 @@ HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run\autoLoginQatarAp
 ## 工作原理
 
 ```
-ProcessDetector                      MainWidget
-  QTimer(0.5s) ──► 进程快照 ──► loginSignal ──► 查找对话框
-                                                    ├─ 填入账户
-                                                    ├─ 填入密码
-                                                    ├─ 点击登录
-                                                    └─ 检测错误提示
+ProcessDetector                        MainWidget
+  QTimer(0.5s) ──► 进程快照 ──► loginSignal ──► 判定客户端
+                                                  ├─ Qatar    : 密码对话框
+                                                  └─ QtPacker : 凭据对话框
+                                                        ├─ 填入账户
+                                                        ├─ 填入密码
+                                                        ├─ 点击登录
+                                                        └─ 检测错误提示
 ```
 
 登录流程的关键点(`mainwidget.cpp` 与 `processdetector.cpp`):
+
+**0. 多客户端分发**
+
+`ProcessDetector` 一次快照同时匹配 `QaTar.exe` 与 `QtPacker.exe`（并对映像名做不区分大小写的 `qtpacker` 兜底，兼容带版本号/改名的映像）。`login()` 按当前出现的对话框判定目标客户端，记录到 `LoginTarget`，`performLogin()` 据此分发到 `performQatarLogin()` 或 `performQtPackerLogin()`。
 
 **1. 环境自动识别**
 
@@ -209,7 +216,25 @@ Right: 0, Area: 0x99, ec: -3(远端响应帐密错误)
 
 若账号已在 `ComboBox` 的下拉列表中,则用 `CB_SETCURSEL` 直接选中;否则回退为 `WM_SETTEXT` 写入文本。账户留空时**跳过填充**,保留对话框原有内容,避免清空导致登录失败。
 
-**5. 启停状态机**
+**5. QtPacker 客户端的处理**
+
+QtPacker 的凭据对话框标题为 `QtPacker 1.33.9.3 (Production) - Enter your credential`,版本号与运行环境都会变化,故只取固定片段 `Enter your credential` 用 `EnumWindows` 做“标题包含”匹配。
+
+对话框内只有 `Uid`、`Pwd` 两个输入框(均为原生 `Edit`)与一个 `Login` 按钮,控件可能嵌在面板容器里,因此用**递归遍历**收集后代控件,再按几何位置与文本来定位:
+
+| 控件 | 定位规则 |
+| --- | --- |
+| `Uid` 输入框 | 对话框内**最上方**的可见 `Edit` |
+| `Pwd` 输入框 | 对话框内**最下方**的可见 `Edit` |
+| `Login` 按钮 | 递归查找文本为 `Login`(不区分大小写)的 `Button` |
+| 错误提示 | 标题为 `Message` 的对话框,且其 `Static` 文本含 `Fail to login` |
+
+与 Qatar 的两点差异:
+
+1. **点击按钮用 `PostMessage` 而非 `SendMessage`**。QtPacker 登录失败时会弹出**模态**提示框,同步 `SendMessage` 会让本进程界面线程阻塞在该调用的等待上;`PostMessage` 把点击投递出去后立即返回。
+2. **登录结果异步校验**。点击后由 `verifyTimer` 延时 1.5 秒轮询:命中 `Message` 提示框即判定密码错误(复用 Qatar 的 `reportPasswordError()`);凭据对话框消失即视为成功;对话框仍在则最多再等 6 轮(约 9 秒)后恢复监测。
+
+**6. 启停状态机**
 
 `MainWidget` 用三态枚举维护状态,避免早期“先停后启”写法在延时窗口内出现状态不一致(那时点「停止」会误报“自动登录未启用”):
 
@@ -219,9 +244,9 @@ Right: 0, Area: 0x99, ec: -3(远端响应帐密错误)
 | `Running` | 监测中 | 运行中(绿) |
 | `Handling` | 已检测到客户端,正在执行登录动作 | 登录中(橙) |
 
-`Handling` 期间点「停止自动登录」是合法操作:会取消待执行的登录动作(`loginTimer->stop()`)并回到 `Stopped`,不会被延时回调重新拉起。另外 `login()` 进入处理前会先确认对话框确实存在,登录成功后客户端仍驻留时不会反复空转。
+`Handling` 期间点「停止自动登录」是合法操作:会取消待执行的登录动作与校验(`loginTimer->stop()` / `verifyTimer->stop()`)并回到 `Stopped`,不会被延时回调重新拉起。另外 `login()` 进入处理前会先确认对话框确实存在,登录成功后客户端仍驻留时不会反复空转。
 
-**6. 进程监测的开销**
+**7. 进程监测的开销**
 
 原先每轮起一个 `tasklist` 子进程并同步 `waitForFinished()`,实测单次约 **200 毫秒**,期间界面线程完全阻塞。现改为一次 `CreateToolhelp32Snapshot` 系统调用,实测约 **7~9 毫秒**(随系统进程数变化),不再创建子进程,界面无可感知卡顿。
 
